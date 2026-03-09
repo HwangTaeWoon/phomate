@@ -118,6 +118,25 @@
     text-align: center;
 }
 
+.edit-preview-image {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 24px;
+}
+
+.edit-result-text {
+    background: #F8FAFC;
+    border: 1px solid #E2E8F0;
+    color: #334155;
+    border-radius: 12px;
+    padding: 10px 12px;
+    font-size: 13px;
+    line-height: 1.45;
+    margin-bottom: 12px;
+    white-space: pre-wrap;
+}
+
 .edit-toolbar {
     display: flex;
     gap: 8px;
@@ -190,6 +209,17 @@
     font-size: 13px;
     cursor: pointer;
     padding-left: 12px;
+}
+
+.chat-send-btn:disabled {
+    opacity: 0.55;
+    cursor: default;
+}
+
+.chat-error-text {
+    color: #B91C1C;
+    font-size: 12px;
+    margin-top: 8px;
 }
 
 /* 챗봇 열기 버튼 (닫혔을 때) */

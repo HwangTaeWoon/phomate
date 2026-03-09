@@ -1,14 +1,14 @@
-import React, { useState } from 'react';
-import { User, Bell, Upload } from 'lucide-react'; 
+import React from 'react';
+import { Upload } from 'lucide-react'; 
 import '../styles/Navbar.css';
 
 interface NavbarProps {
     onNotiClick?: () => void;   
     onUploadClick?: () => void; 
+    notificationCount?: number;
 }
 
-export default function Navbar({ onNotiClick, onUploadClick }: NavbarProps) {
-    const [notificationCount, setNotificationCount] = useState(1);
+export default function Navbar({ onNotiClick, onUploadClick, notificationCount = 0 }: NavbarProps) {
 
     return (
         <nav className="navbar">

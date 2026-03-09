@@ -28,6 +28,29 @@
     color: #003366;
 }
 
+.upload-file-summary {
+    margin-top: 12px;
+    font-size: 12px;
+    color: #475569;
+}
+
+.upload-file-list {
+    margin: 8px 0 0;
+    padding: 0;
+    list-style: none;
+    max-height: 90px;
+    overflow-y: auto;
+}
+
+.upload-file-item {
+    font-size: 12px;
+    color: #334155;
+    line-height: 1.5;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
 .upload-start-btn {
     width: 100%;
     background: #003366;
@@ -37,6 +60,11 @@
     border-radius: 15px;
     font-weight: 700;
     cursor: pointer;
+}
+
+.upload-start-btn:disabled {
+    opacity: 0.55;
+    cursor: default;
 }
 
 /* UploadStatusPanel 전용 스타일 (Notification.css에 추가) */

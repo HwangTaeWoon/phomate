@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import Navbar from '../components/Navbar';
 import Sidebar from '../components/Sidebar';
 import Chatbot from '../components/Chatbot';
@@ -16,9 +16,26 @@ import UploadModal from '../components/Uploadmodal';
 import UploadStatusPanel from '../components/Uploadstatuspanel';
 import StorageUsageModal from '../components/StorageUsageModal';
 import { Photo } from '../types';
+import { commitPhotoUpload, initPhotoUpload, putFileToPresignedUrl } from '../api/upload';
 import '../styles/Home.css';
 
 type ViewType = 'home' | 'folder_list' | 'folder_detail' | 'shared_list' | 'shared_detail' | 'trash';
+
+type UploadTaskStatus = 'queued' | 'uploading' | 'processing' | 'done' | 'error';
+
+type UploadTask = {
+    id: string;
+    file: File;
+    filename: string;
+    progress: number;
+    status: UploadTaskStatus;
+    photoId?: number;
+    originalKey?: string;
+    uploadUrl?: string;
+    etag?: string;
+    previewUrl?: string;
+    errorMessage?: string;
+};
 
 export default function Home() {
     const [view, setView] = useState<ViewType>('home');
@@ -46,31 +63,193 @@ export default function Home() {
     
     const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
     const [isUploading, setIsUploading] = useState(false);
-    const [uploadProgress, setUploadProgress] = useState(0);
+    const [uploadItems, setUploadItems] = useState<UploadTask[]>([]);
 
     const [modalConfig, setModalConfig] = useState<{type: 'restore' | 'delete_confirm' | 'alert', message: string} | null>(null);
     const [isStorageModalOpen, setIsStorageModalOpen] = useState(false);
 
-    const startUpload = () => {
-        setIsUploadModalOpen(false);
-        setIsUploading(true);
-        setUploadProgress(0);
-    };
-
-    useEffect(() => {
-        if (isUploading && uploadProgress < 100) {
-            const timer = setTimeout(() => setUploadProgress(prev => prev + 5), 200);
-            return () => clearTimeout(timer);
-        } else if (uploadProgress >= 100) {
-            setTimeout(() => setIsUploading(false), 1000); 
-        }
-    }, [isUploading, uploadProgress]);
-
-    const dummyPhotos: Photo[] = Array.from({ length: 16 }, (_, i) => ({
+    const [photos, setPhotos] = useState<Photo[]>(() => Array.from({ length: 16 }, (_, i) => ({
         id: String(i),
         thumbnailUrl: `https://picsum.photos/400/500?random=${i}`,
         likeCount: 0,
-    }));
+    })));
+
+    const updateUploadTask = (id: string, patch: Partial<UploadTask>) => {
+        setUploadItems((prev) => prev.map((task) => (task.id === id ? { ...task, ...patch } : task)));
+    };
+
+    const startUpload = async (files: File[]) => {
+        if (files.length === 0) return;
+
+        setIsUploadModalOpen(false);
+
+        const initialTasks: UploadTask[] = files.map((file, index) => ({
+            id: `${Date.now()}-${index}`,
+            file,
+            filename: file.name,
+            progress: 0,
+            status: 'queued'
+        }));
+
+        setUploadItems(initialTasks);
+        setIsUploading(true);
+
+        try {
+            const initItems = files.map((file) => ({
+                originalFilename: file.name,
+                contentType: file.type || 'application/octet-stream',
+                size: file.size,
+                clientLastModifiedMs: file.lastModified
+            }));
+
+            const initResults = await initPhotoUpload(initItems);
+            const preparedTasks = initialTasks.map((task, index) => {
+                const init = initResults[index];
+                if (!init || !Number.isFinite(init.photoId) || init.photoId <= 0 || !init.originalKey || !init.uploadUrl) {
+                    return {
+                        ...task,
+                        status: 'error' as const,
+                        errorMessage: '업로드 URL 발급에 실패했습니다.'
+                    };
+                }
+
+                return {
+                    ...task,
+                    photoId: init.photoId,
+                    originalKey: init.originalKey,
+                    uploadUrl: init.uploadUrl
+                };
+            });
+
+            setUploadItems(preparedTasks);
+
+            const readyTasks = preparedTasks.filter((task) => task.uploadUrl && task.photoId !== undefined && task.originalKey);
+            const commitCandidates: { id: string; photoId: number; originalKey: string; etag: string; clientLastModifiedMs: number }[] = [];
+
+            const maxConcurrent = Math.min(3, readyTasks.length);
+            let cursor = 0;
+
+            const worker = async () => {
+                while (true) {
+                    const currentIndex = cursor;
+                    cursor += 1;
+
+                    if (currentIndex >= readyTasks.length) return;
+
+                    const task = readyTasks[currentIndex];
+                    const uploadUrl = task.uploadUrl as string;
+
+                    try {
+                        updateUploadTask(task.id, { status: 'uploading', progress: 0, errorMessage: undefined });
+
+                        const etag = await putFileToPresignedUrl(uploadUrl, task.file, (percent) => {
+                            updateUploadTask(task.id, { status: 'uploading', progress: percent });
+                        });
+
+                        updateUploadTask(task.id, { status: 'processing', progress: 100, etag });
+
+                        commitCandidates.push({
+                            id: task.id,
+                            photoId: task.photoId as number,
+                            originalKey: task.originalKey as string,
+                            etag,
+                            clientLastModifiedMs: task.file.lastModified
+                        });
+                    } catch (error: unknown) {
+                        const message = error instanceof Error ? error.message : '파일 업로드에 실패했습니다.';
+                        updateUploadTask(task.id, { status: 'error', errorMessage: message });
+                    }
+                }
+            };
+
+            if (maxConcurrent > 0) {
+                await Promise.all(Array.from({ length: maxConcurrent }, () => worker()));
+            }
+
+            const allPutSucceeded = readyTasks.length > 0 && commitCandidates.length === readyTasks.length;
+
+            if (!allPutSucceeded && commitCandidates.length > 0) {
+                setUploadItems((prev) => prev.map((task) => (
+                    task.status === 'processing'
+                        ? {
+                            ...task,
+                            status: 'error',
+                            errorMessage: '일부 파일 PUT 업로드 실패로 완료 처리를 진행하지 않았습니다.'
+                        }
+                        : task
+                )));
+            }
+
+            if (allPutSucceeded) {
+                try {
+                    const commitResults = await commitPhotoUpload(
+                        commitCandidates.map((candidate) => ({
+                            photoId: candidate.photoId,
+                            originalKey: candidate.originalKey,
+                            etag: candidate.etag,
+                            clientLastModifiedMs: candidate.clientLastModifiedMs
+                        }))
+                    );
+
+                    const previewByPhotoId = new Map(
+                        commitResults
+                            .filter((item) => item.photoId && item.previewUrl)
+                            .map((item) => [item.photoId, item.previewUrl])
+                    );
+
+                    setUploadItems((prev) => prev.map((task) => {
+                        if (task.status !== 'processing') return task;
+                        const previewUrl = task.photoId ? previewByPhotoId.get(task.photoId) : undefined;
+                        if (!previewUrl) {
+                            return {
+                                ...task,
+                                status: 'error',
+                                errorMessage: '서버 후처리에 실패했습니다.'
+                            };
+                        }
+
+                        return {
+                            ...task,
+                            status: 'done',
+                            previewUrl,
+                            progress: 100
+                        };
+                    }));
+
+                    const newPhotos = commitCandidates.reduce<Photo[]>((acc, candidate) => {
+                        const previewUrl = previewByPhotoId.get(candidate.photoId);
+                        if (!previewUrl) return acc;
+
+                        const sourceTask = preparedTasks.find((task) => task.id === candidate.id);
+                        acc.push({
+                            id: String(candidate.photoId),
+                            thumbnailUrl: previewUrl,
+                            likeCount: 0,
+                            title: sourceTask?.filename
+                        });
+                        return acc;
+                    }, []);
+
+                    if (newPhotos.length > 0) {
+                        setPhotos((prev) => [...newPhotos, ...prev]);
+                    }
+                } catch {
+                    setUploadItems((prev) => prev.map((task) => (
+                        task.status === 'processing'
+                            ? { ...task, status: 'error', errorMessage: '업로드 후처리 요청이 실패했습니다.' }
+                            : task
+                    )));
+                }
+            }
+        } catch (error: unknown) {
+            const message = error instanceof Error ? error.message : '업로드를 시작할 수 없습니다.';
+            setUploadItems((prev) => prev.map((task) => ({ ...task, status: 'error', errorMessage: message })));
+        } finally {
+            window.setTimeout(() => {
+                setIsUploading(false);
+            }, 1500);
+        }
+    };
 
     const handleNavigate = (type: string, target?: string) => {
         if (type === 'home') {
@@ -214,11 +393,15 @@ export default function Home() {
         view === 'shared_list' ? 'shared_parent' :
         `shared_child:${selectedFolder || ''}`;
 
+    const uploadNotificationItems = uploadItems.filter((item) => item.status !== 'queued');
+    const notificationCount = 1 + uploadNotificationItems.length;
+
     return (
         <div className="home-container">
             <Navbar 
                 onNotiClick={() => setIsNotiOpen(!isNotiOpen)} 
                 onUploadClick={() => setIsUploadModalOpen(true)} 
+                notificationCount={notificationCount}
             />
 
             <div className="main-layout">
@@ -262,7 +445,7 @@ export default function Home() {
                         <TrashView />
                     ) : (view === 'home' || view === 'folder_detail' || view === 'shared_detail') ? (
                         <div className="photo-grid">
-                            {dummyPhotos.map((photo, index) => (
+                            {photos.map((photo, index) => (
                                 <PhotoCard 
                                     key={photo.id} 
                                     photo={photo} 
@@ -291,11 +474,26 @@ export default function Home() {
                                 setIsNotiOpen(false);
                                 setShowInviteModal(true);
                             }}
+                            uploadItems={uploadNotificationItems.map((item) => ({
+                                id: item.id,
+                                filename: item.filename,
+                                progress: item.progress,
+                                status: item.status,
+                                errorMessage: item.errorMessage
+                            }))}
                         />
                     )}
 
                     {isUploading && (
-                        <UploadStatusPanel progress={uploadProgress} />
+                        <UploadStatusPanel
+                            items={uploadItems.map((item) => ({
+                                id: item.id,
+                                filename: item.filename,
+                                progress: item.progress,
+                                status: item.status,
+                                errorMessage: item.errorMessage
+                            }))}
+                        />
                     )}
                 </main>
 
@@ -308,10 +506,10 @@ export default function Home() {
 
             {previewIndex !== null && (
                 <PhotoPreview 
-                    photo={dummyPhotos[previewIndex]}
+                    photo={photos[previewIndex]}
                     onClose={() => setPreviewIndex(null)}
-                    onPrev={() => setPreviewIndex((previewIndex - 1 + dummyPhotos.length) % dummyPhotos.length)}
-                    onNext={() => setPreviewIndex((previewIndex + 1) % dummyPhotos.length)}
+                    onPrev={() => setPreviewIndex((previewIndex - 1 + photos.length) % photos.length)}
+                    onNext={() => setPreviewIndex((previewIndex + 1) % photos.length)}
                     onDelete={() => {}}
                     onDownload={() => {}}
                 />

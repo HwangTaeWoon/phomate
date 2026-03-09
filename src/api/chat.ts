@@ -1,0 +1,344 @@
+type JsonRecord = Record<string, unknown>;
+type SearchResultItem = {
+    postId: number;
+    title: string;
+    thumbnailUrl: string;
+    likeCount: number;
+    likedByMe: boolean;
+};
+
+type SendEditChatResponse = {
+    chatSessionId: number;
+    userMessageId: number;
+    assistantMessageId: number;
+    assistantContent: string;
+    editedUrl: string;
+};
+
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '';
+
+function toApiUrl(path: string): string {
+    if (!API_BASE_URL) return path;
+    return new URL(path, API_BASE_URL).toString();
+}
+
+function asText(value: unknown): string {
+    if (typeof value === 'string') return value;
+    if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+    return '';
+}
+
+function asNumber(value: unknown): number {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string' && value.trim()) {
+        const parsed = Number(value);
+        if (Number.isFinite(parsed)) return parsed;
+    }
+    return 0;
+}
+
+function extractTextFromPayload(payload: unknown): string {
+    if (typeof payload === 'string') return payload;
+    if (!payload || typeof payload !== 'object') return '';
+
+    const record = payload as JsonRecord;
+    const directKeys = ['delta', 'content', 'message', 'text', 'token'];
+
+    for (const key of directKeys) {
+        const value = record[key];
+        const text = asText(value);
+        if (text) return text;
+    }
+
+    const data = record.data;
+    if (data && typeof data === 'object') {
+        const nested = data as JsonRecord;
+        for (const key of directKeys) {
+            const value = nested[key];
+            const text = asText(value);
+            if (text) return text;
+        }
+    }
+
+    return '';
+}
+
+function parseStreamLine(line: string): { done: boolean; text: string } {
+    const trimmed = line.trim();
+    if (!trimmed) return { done: false, text: '' };
+
+    const payload = trimmed.startsWith('data:') ? trimmed.slice(5).trim() : trimmed;
+    if (!payload) return { done: false, text: '' };
+    if (payload === '[DONE]') return { done: true, text: '' };
+
+    if (payload.startsWith('{') || payload.startsWith('[')) {
+        try {
+            const parsed = JSON.parse(payload);
+            return { done: false, text: extractTextFromPayload(parsed) };
+        } catch {
+            return { done: false, text: payload };
+        }
+    }
+
+    return { done: false, text: payload };
+}
+
+function parseEventBlock(block: string): { eventType: string; data: string } {
+    const lines = block.split(/\r?\n/);
+    let eventType = '';
+    const dataLines: string[] = [];
+
+    for (const line of lines) {
+        if (line.startsWith('event:')) {
+            eventType = line.slice(6).trim();
+            continue;
+        }
+
+        if (line.startsWith('data:')) {
+            dataLines.push(line.slice(5));
+        }
+    }
+
+    return {
+        eventType,
+        data: dataLines.join('\n')
+    };
+}
+
+function parseResultsItems(data: string): SearchResultItem[] {
+    const trimmed = data.trim();
+    if (!trimmed) return [];
+
+    try {
+        const parsed = JSON.parse(trimmed) as { items?: SearchResultItem[] };
+        return Array.isArray(parsed.items) ? parsed.items : [];
+    } catch {
+        return [];
+    }
+}
+
+export async function startChatSession(): Promise<number> {
+    const response = await fetch(toApiUrl('/api/chat/sessions/start'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+    });
+
+    if (!response.ok) {
+        throw new Error('채팅 세션 생성에 실패했습니다.');
+    }
+
+    const data = (await response.json()) as JsonRecord;
+    const sessionId =
+        asNumber(data.chatSessionId) ||
+        asNumber(data.chat_session_id) ||
+        asNumber(data.sessionId) ||
+        asNumber(data.session_id) ||
+        asNumber((data.data as JsonRecord | undefined)?.chatSessionId) ||
+        asNumber((data.data as JsonRecord | undefined)?.chat_session_id) ||
+        asNumber((data.data as JsonRecord | undefined)?.sessionId) ||
+        asNumber((data.data as JsonRecord | undefined)?.session_id);
+
+    if (!Number.isFinite(sessionId) || sessionId <= 0) {
+        throw new Error('세션 ID를 찾을 수 없습니다.');
+    }
+
+    return sessionId;
+}
+
+export async function streamSearchChat(
+    params: {
+        sessionId: number;
+        message: string;
+        onDelta: (delta: string) => void;
+        onResults?: (items: SearchResultItem[]) => void;
+    }
+): Promise<void> {
+    const response = await fetch(toApiUrl('/api/chat/search/stream'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            chatSessionId: params.sessionId,
+            userText: params.message
+        })
+    });
+
+    if (!response.ok) {
+        throw new Error('검색 스트리밍 요청에 실패했습니다.');
+    }
+
+    if (!response.body) {
+        const text = await response.text();
+        if (text) params.onDelta(text);
+        return;
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let pending = '';
+
+    const consumeBlock = (block: string) => {
+        if (!block.trim()) return;
+
+        const { eventType, data } = parseEventBlock(block);
+
+        if (eventType === 'results') {
+            const items = parseResultsItems(data);
+            if (items.length && params.onResults) {
+                params.onResults(items);
+            }
+            return;
+        }
+
+        if (eventType === 'delta') {
+            params.onDelta(data);
+            return;
+        }
+
+        if (isDoneEvent(eventType, data)) {
+            return;
+        }
+
+        const parsed = parseStreamLine(data);
+        if (parsed.done) return;
+        if (parsed.text) params.onDelta(parsed.text);
+    };
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        pending += decoder.decode(value, { stream: true });
+        const blocks = pending.split(/\r?\n\r?\n/);
+        pending = blocks.pop() ?? '';
+
+        for (const block of blocks) {
+            consumeBlock(block);
+        }
+    }
+
+    pending += decoder.decode();
+    if (pending.trim()) {
+        consumeBlock(pending);
+    }
+}
+
+export async function streamTextChat(
+    params: {
+        sessionId: number;
+        message: string;
+        onDelta: (delta: string) => void;
+        onError?: (code: string) => void;
+    }
+): Promise<void> {
+    const response = await fetch(toApiUrl('/api/chat/stream'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            chatSessionId: params.sessionId,
+            userText: params.message
+        })
+    });
+
+    if (!response.ok) {
+        throw new Error('텍스트 스트리밍 요청에 실패했습니다.');
+    }
+
+    if (!response.body) {
+        const text = await response.text();
+        if (text) params.onDelta(text);
+        return;
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let pending = '';
+
+    const consumeBlock = (block: string): boolean => {
+        if (!block.trim()) return false;
+
+        const { eventType, data } = parseEventBlock(block);
+
+        if (eventType === 'delta') {
+            params.onDelta(data);
+            return false;
+        }
+
+        if (eventType === 'error') {
+            if (params.onError) {
+                params.onError(data.trim() || 'stream_failed');
+            }
+            return false;
+        }
+
+        if (isDoneEvent(eventType, data)) {
+            return true;
+        }
+
+        const parsed = parseStreamLine(data);
+        if (parsed.done) return true;
+        if (parsed.text) params.onDelta(parsed.text);
+        return false;
+    };
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        pending += decoder.decode(value, { stream: true });
+        const blocks = pending.split(/\r?\n\r?\n/);
+        pending = blocks.pop() ?? '';
+
+        for (const block of blocks) {
+            const shouldStop = consumeBlock(block);
+            if (shouldStop) return;
+        }
+    }
+
+    pending += decoder.decode();
+    if (pending.trim()) {
+        consumeBlock(pending);
+    }
+}
+
+export async function sendEditChat(
+    params: { chatSessionId: number; editSessionId: number; userText: string }
+): Promise<SendEditChatResponse> {
+    const query = new URLSearchParams({
+        chatSessionId: String(params.chatSessionId),
+        editSessionId: String(params.editSessionId),
+        userText: params.userText
+    });
+
+    const response = await fetch(`${toApiUrl('/api/chat/send-edit')}?${query.toString()}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+    });
+
+    if (!response.ok) {
+        throw new Error('편집 메시지 전송에 실패했습니다.');
+    }
+
+    const data = (await response.json()) as JsonRecord;
+    return {
+        chatSessionId:
+            asNumber(data.chatSessionId) ||
+            asNumber((data.data as JsonRecord | undefined)?.chatSessionId),
+        userMessageId:
+            asNumber(data.userMessageId) ||
+            asNumber((data.data as JsonRecord | undefined)?.userMessageId),
+        assistantMessageId:
+            asNumber(data.assistantMessageId) ||
+            asNumber((data.data as JsonRecord | undefined)?.assistantMessageId),
+        assistantContent:
+            asText(data.assistantContent) ||
+            asText((data.data as JsonRecord | undefined)?.assistantContent),
+        editedUrl:
+            asText(data.editedUrl) ||
+            asText((data.data as JsonRecord | undefined)?.editedUrl)
+    };
+}
+
+function isDoneEvent(eventType: string, data: string): boolean {
+    return eventType === 'done' || data.trim() === '[DONE]';
+}
