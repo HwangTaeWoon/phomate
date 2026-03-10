@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import Navbar from '../components/Navbar';
 import Sidebar from '../components/Sidebar';
 import Chatbot from '../components/Chatbot';
@@ -16,6 +16,13 @@ import UploadModal from '../components/Uploadmodal';
 import UploadStatusPanel from '../components/Uploadstatuspanel';
 import StorageUsageModal from '../components/StorageUsageModal';
 import { Photo } from '../types';
+import {
+    beginGoogleLogin,
+    clearAuthTokens,
+    completeGoogleLoginIfNeeded,
+    isAuthenticated
+} from '../api/auth';
+import { createPhoto, getAlbumLatest, movePhotoToTrash } from '../api/photo';
 import { commitPhotoUpload, initPhotoUpload, putFileToPresignedUrl } from '../api/upload';
 import '../styles/Home.css';
 
@@ -38,6 +45,8 @@ type UploadTask = {
 };
 
 export default function Home() {
+    const preferPhotoControllerUpload = true;
+    const [isLoggedIn, setIsLoggedIn] = useState<boolean>(isAuthenticated());
     const [view, setView] = useState<ViewType>('home');
     const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
     const [folders, setFolders] = useState<string[]>(['폴더 1']);
@@ -68,11 +77,67 @@ export default function Home() {
     const [modalConfig, setModalConfig] = useState<{type: 'restore' | 'delete_confirm' | 'alert', message: string} | null>(null);
     const [isStorageModalOpen, setIsStorageModalOpen] = useState(false);
 
-    const [photos, setPhotos] = useState<Photo[]>(() => Array.from({ length: 16 }, (_, i) => ({
-        id: String(i),
-        thumbnailUrl: `https://picsum.photos/400/500?random=${i}`,
-        likeCount: 0,
-    })));
+    const [photos, setPhotos] = useState<Photo[]>([]);
+
+    useEffect(() => {
+        let mounted = true;
+
+        completeGoogleLoginIfNeeded()
+            .then((handled) => {
+                if (!mounted) return;
+                if (handled) {
+                    setIsLoggedIn(true);
+                }
+            })
+            .catch((error: unknown) => {
+                if (!mounted) return;
+                const message = error instanceof Error ? error.message : '로그인 처리 중 오류가 발생했습니다.';
+                window.alert(message);
+            });
+
+        return () => {
+            mounted = false;
+        };
+    }, []);
+
+    const handleLogin = async () => {
+        try {
+            await beginGoogleLogin();
+        } catch (error: unknown) {
+            const message = error instanceof Error ? error.message : '로그인을 시작할 수 없습니다.';
+            window.alert(message);
+        }
+    };
+
+    const handleLogout = () => {
+        clearAuthTokens();
+        setIsLoggedIn(false);
+        setPhotos([]);
+        window.alert('로그아웃되었습니다.');
+    };
+
+    const loadAlbum = async () => {
+        if (!isAuthenticated()) return;
+
+        try {
+            const items = await getAlbumLatest({ size: 60 });
+            setPhotos(items.map((item) => ({
+                id: String(item.photoId),
+                thumbnailUrl: item.thumbnailUrl || item.previewUrl,
+                previewUrl: item.previewUrl,
+                shotAt: item.shotAt,
+                likeCount: 0
+            })));
+        } catch (error: unknown) {
+            const message = error instanceof Error ? error.message : '앨범을 불러오지 못했습니다.';
+            window.alert(message);
+        }
+    };
+
+    useEffect(() => {
+        if (!isLoggedIn) return;
+        void loadAlbum();
+    }, [isLoggedIn]);
 
     const updateUploadTask = (id: string, patch: Partial<UploadTask>) => {
         setUploadItems((prev) => prev.map((task) => (task.id === id ? { ...task, ...patch } : task)));
@@ -80,6 +145,12 @@ export default function Home() {
 
     const startUpload = async (files: File[]) => {
         if (files.length === 0) return;
+
+        if (!isAuthenticated()) {
+            window.alert('업로드는 로그인 후 사용할 수 있습니다.');
+            setIsUploadModalOpen(false);
+            return;
+        }
 
         setIsUploadModalOpen(false);
 
@@ -94,6 +165,41 @@ export default function Home() {
         setUploadItems(initialTasks);
         setIsUploading(true);
 
+        const isUnauthorizedError = (error: unknown): boolean => {
+            if (!(error instanceof Error)) return false;
+            return error.message.includes('401') || error.message.includes('Unauthorized');
+        };
+
+        const uploadViaPhotoController = async () => {
+            for (const task of initialTasks) {
+                try {
+                    updateUploadTask(task.id, { status: 'uploading', progress: 35, errorMessage: undefined });
+                    await createPhoto(task.file, task.file.lastModified);
+                    updateUploadTask(task.id, { status: 'processing', progress: 80 });
+                    updateUploadTask(task.id, { status: 'done', progress: 100 });
+                } catch (error: unknown) {
+                    const message = error instanceof Error ? error.message : '사진 업로드에 실패했습니다.';
+                    updateUploadTask(task.id, { status: 'error', errorMessage: message, progress: 0 });
+                }
+            }
+
+            await loadAlbum();
+        };
+
+        if (preferPhotoControllerUpload) {
+            try {
+                await uploadViaPhotoController();
+            } catch (error: unknown) {
+                const message = error instanceof Error ? error.message : '사진 업로드에 실패했습니다.';
+                setUploadItems((prev) => prev.map((task) => ({ ...task, status: 'error', errorMessage: message })));
+            } finally {
+                window.setTimeout(() => {
+                    setIsUploading(false);
+                }, 1500);
+            }
+            return;
+        }
+
         try {
             const initItems = files.map((file) => ({
                 originalFilename: file.name,
@@ -102,7 +208,18 @@ export default function Home() {
                 clientLastModifiedMs: file.lastModified
             }));
 
-            const initResults = await initPhotoUpload(initItems);
+            let initResults: Awaited<ReturnType<typeof initPhotoUpload>> = [];
+            try {
+                initResults = await initPhotoUpload(initItems);
+            } catch (error: unknown) {
+                if (isUnauthorizedError(error)) {
+                    await uploadViaPhotoController();
+                    return;
+                }
+
+                throw error;
+            }
+
             const preparedTasks = initialTasks.map((task, index) => {
                 const init = initResults[index];
                 if (!init || !Number.isFinite(init.photoId) || init.photoId <= 0 || !init.originalKey || !init.uploadUrl) {
@@ -216,22 +333,8 @@ export default function Home() {
                         };
                     }));
 
-                    const newPhotos = commitCandidates.reduce<Photo[]>((acc, candidate) => {
-                        const previewUrl = previewByPhotoId.get(candidate.photoId);
-                        if (!previewUrl) return acc;
-
-                        const sourceTask = preparedTasks.find((task) => task.id === candidate.id);
-                        acc.push({
-                            id: String(candidate.photoId),
-                            thumbnailUrl: previewUrl,
-                            likeCount: 0,
-                            title: sourceTask?.filename
-                        });
-                        return acc;
-                    }, []);
-
-                    if (newPhotos.length > 0) {
-                        setPhotos((prev) => [...newPhotos, ...prev]);
+                    if (commitResults.length > 0) {
+                        await loadAlbum();
                     }
                 } catch {
                     setUploadItems((prev) => prev.map((task) => (
@@ -396,12 +499,37 @@ export default function Home() {
     const uploadNotificationItems = uploadItems.filter((item) => item.status !== 'queued');
     const notificationCount = 1 + uploadNotificationItems.length;
 
+    const handleDeleteCurrentPhoto = async () => {
+        if (previewIndex === null) return;
+
+        const target = photos[previewIndex];
+        if (!target) return;
+
+        const photoId = Number(target.id);
+        if (!Number.isFinite(photoId) || photoId <= 0) {
+            window.alert('유효하지 않은 사진 ID입니다.');
+            return;
+        }
+
+        try {
+            await movePhotoToTrash(photoId);
+            setPhotos((prev) => prev.filter((photo) => photo.id !== target.id));
+            setPreviewIndex(null);
+        } catch (error: unknown) {
+            const message = error instanceof Error ? error.message : '사진 삭제에 실패했습니다.';
+            window.alert(message);
+        }
+    };
+
     return (
         <div className="home-container">
             <Navbar 
                 onNotiClick={() => setIsNotiOpen(!isNotiOpen)} 
                 onUploadClick={() => setIsUploadModalOpen(true)} 
                 notificationCount={notificationCount}
+                isLoggedIn={isLoggedIn}
+                onLoginClick={() => void handleLogin()}
+                onLogoutClick={handleLogout}
             />
 
             <div className="main-layout">
@@ -442,7 +570,7 @@ export default function Home() {
                     {selectedFolder && <h2 className="folder-title">{selectedFolder}</h2>}
 
                     {view === 'trash' ? (
-                        <TrashView />
+                        <TrashView isLoggedIn={isLoggedIn} onChanged={() => void loadAlbum()} />
                     ) : (view === 'home' || view === 'folder_detail' || view === 'shared_detail') ? (
                         <div className="photo-grid">
                             {photos.map((photo, index) => (
@@ -501,6 +629,7 @@ export default function Home() {
                     isOpen={isChatOpen} 
                     onClose={() => setIsChatOpen(false)} 
                     onOpen={() => setIsChatOpen(true)} 
+                    isLoggedIn={isLoggedIn}
                 />
             </div>
 
@@ -510,7 +639,7 @@ export default function Home() {
                     onClose={() => setPreviewIndex(null)}
                     onPrev={() => setPreviewIndex((previewIndex - 1 + photos.length) % photos.length)}
                     onNext={() => setPreviewIndex((previewIndex + 1) % photos.length)}
-                    onDelete={() => {}}
+                    onDelete={() => void handleDeleteCurrentPhoto()}
                     onDownload={() => {}}
                 />
             )}

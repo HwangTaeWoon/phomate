@@ -222,6 +222,37 @@
     margin-top: 8px;
 }
 
+.folder-preview-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 6px;
+}
+
+.folder-preview-btn {
+    flex: 1;
+    border: none;
+    border-radius: 10px;
+    padding: 10px 12px;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.folder-preview-btn.accept {
+    background: #0F766E;
+    color: #FFFFFF;
+}
+
+.folder-preview-btn.reject {
+    background: #E2E8F0;
+    color: #334155;
+}
+
+.folder-preview-btn:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+
 /* 챗봇 열기 버튼 (닫혔을 때) */
 
 .chatbot-open-trigger {

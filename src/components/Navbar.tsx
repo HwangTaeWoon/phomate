@@ -6,15 +6,29 @@ interface NavbarProps {
     onNotiClick?: () => void;   
     onUploadClick?: () => void; 
     notificationCount?: number;
+    isLoggedIn?: boolean;
+    onLoginClick?: () => void;
+    onLogoutClick?: () => void;
 }
 
-export default function Navbar({ onNotiClick, onUploadClick, notificationCount = 0 }: NavbarProps) {
+export default function Navbar({
+    onNotiClick,
+    onUploadClick,
+    notificationCount = 0,
+    isLoggedIn = false,
+    onLoginClick,
+    onLogoutClick
+}: NavbarProps) {
 
     return (
         <nav className="navbar">
             <div className="nav-left">
                 <div className="auth-links">
-                    <span className="clickable" onClick={() => console.log('로그인')}>로그인</span>
+                    {isLoggedIn ? (
+                        <span className="clickable" onClick={onLogoutClick}>로그아웃</span>
+                    ) : (
+                        <span className="clickable" onClick={onLoginClick}>로그인</span>
+                    )}
                 </div>
             </div>
             

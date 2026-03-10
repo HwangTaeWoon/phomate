@@ -41,7 +41,7 @@ export default function PhotoPreview({
                     
                     <div className="preview-image-container">
                         <img 
-                            src={photo.thumbnailUrl} 
+                            src={photo.originalUrl || photo.previewUrl || photo.thumbnailUrl} 
                             alt={photo.title} 
                         />
                     </div>

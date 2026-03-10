@@ -1,6 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { X, Edit3, Undo, Redo, Save } from 'lucide-react';
-import { sendEditChat, startChatSession, streamSearchChat, streamTextChat } from '../api/chat';
+import {
+    confirmAutoFolder,
+    previewAutoFolder,
+    sendEditChat,
+    startChatSession,
+    streamSearchChat,
+    streamTextChat
+} from '../api/chat';
 import '../styles/Chatbot.css';
 
 type ChatTab = 'search' | 'edit';
@@ -12,13 +19,21 @@ type ChatMessage = {
     content: string;
 };
 
+type FolderPreviewState = {
+    folderName: string;
+    photoIds: number[];
+    status: 'pending' | 'accepted' | 'rejected';
+};
+
 type ChatbotProps = {
     isOpen: boolean;
     onClose: () => void;
     onOpen: () => void;
+    isLoggedIn: boolean;
 };
 
-export default function Chatbot({ isOpen, onClose, onOpen }: ChatbotProps) {
+export default function Chatbot({ isOpen, onClose, onOpen, isLoggedIn }: ChatbotProps) {
+    const isGuestChatMode = import.meta.env.VITE_CHAT_GUEST_MODE === 'true';
     const [activeTab, setActiveTab] = useState<'search' | 'edit'>('search');
     const [sessionId, setSessionId] = useState<number | null>(null);
     const [editSessionId] = useState<number>(1);
@@ -30,10 +45,15 @@ export default function Chatbot({ isOpen, onClose, onOpen }: ChatbotProps) {
     const [input, setInput] = useState('');
     const [isSending, setIsSending] = useState(false);
     const [errorMessage, setErrorMessage] = useState('');
+    const [folderPreview, setFolderPreview] = useState<FolderPreviewState | null>(null);
     const bodyRef = useRef<HTMLDivElement | null>(null);
 
     useEffect(() => {
         if (!isOpen || sessionId) return;
+        if (!isGuestChatMode && !isLoggedIn) {
+            setErrorMessage('로그인 후 챗봇을 사용할 수 있습니다.');
+            return;
+        }
 
         let mounted = true;
         startChatSession()
@@ -49,7 +69,13 @@ export default function Chatbot({ isOpen, onClose, onOpen }: ChatbotProps) {
         return () => {
             mounted = false;
         };
-    }, [isOpen, sessionId]);
+    }, [isGuestChatMode, isLoggedIn, isOpen, sessionId]);
+
+    useEffect(() => {
+        if (isLoggedIn && errorMessage.includes('로그인 후')) {
+            setErrorMessage('');
+        }
+    }, [errorMessage, isLoggedIn]);
 
     useEffect(() => {
         if (!bodyRef.current) return;
@@ -81,6 +107,14 @@ export default function Chatbot({ isOpen, onClose, onOpen }: ChatbotProps) {
 
         const searchKeywords = ['검색', '찾아', '사진', '이미지', 'show me', 'find'];
         return searchKeywords.some((keyword) => normalized.includes(keyword));
+    };
+
+    const isFolderOrganizeIntent = (text: string): boolean => {
+        const normalized = text.trim().toLocaleLowerCase();
+        if (!normalized) return false;
+
+        const folderKeywords = ['폴더', '분류', '정리', 'folder', 'organize', 'group'];
+        return folderKeywords.some((keyword) => normalized.includes(keyword));
     };
 
     const isDemoStreamInput = (text: string): boolean => {
@@ -126,9 +160,44 @@ export default function Chatbot({ isOpen, onClose, onOpen }: ChatbotProps) {
         setIsSending(true);
 
         try {
-            const currentSessionId = await ensureSessionId();
-
             if (activeTab === 'search') {
+                if (isGuestChatMode) {
+                    const assistantMessageId = appendMessage('assistant', '');
+                    await streamDemoAssistantMessage(assistantMessageId);
+                    return;
+                }
+
+                if (!isLoggedIn) {
+                    appendMessage('assistant', '로그인 후 검색 챗봇을 사용할 수 있습니다.');
+                    return;
+                }
+
+                const currentSessionId = await ensureSessionId();
+
+                if (isFolderOrganizeIntent(trimmed)) {
+                    const preview = await previewAutoFolder({
+                        chatSessionId: currentSessionId,
+                        userText: trimmed,
+                        topK: 20
+                    });
+
+                    const photoCount = preview.photos.length;
+                    const photoIds = preview.photos.map((photo) => photo.photoId).filter((id) => id > 0);
+                    setFolderPreview({
+                        folderName: preview.suggestedFolderName || 'AI 추천 폴더',
+                        photoIds,
+                        status: 'pending'
+                    });
+
+                    appendMessage(
+                        'assistant',
+                        `추천 폴더명: ${preview.suggestedFolderName || 'AI 추천 폴더'}\n` +
+                        `분류 후보 사진: ${photoCount}장\n` +
+                        '아래 버튼으로 생성 여부를 선택해주세요.'
+                    );
+                    return;
+                }
+
                 const assistantMessageId = appendMessage('assistant', '');
                 let streamedText = '';
 
@@ -145,11 +214,38 @@ export default function Chatbot({ isOpen, onClose, onOpen }: ChatbotProps) {
                 };
 
                 if (useSearchStream) {
-                    await streamSearchChat({
-                        sessionId: currentSessionId,
-                        message: trimmed,
-                        onDelta: handleDelta
-                    });
+                    try {
+                        await streamSearchChat({
+                            sessionId: currentSessionId,
+                            message: trimmed,
+                            onDelta: handleDelta
+                        });
+                    } catch (error: unknown) {
+                        const message = error instanceof Error ? error.message : '';
+
+                        // Some servers close SSE over HTTP/2 with protocol errors after partial output.
+                        if (streamedText.trim().length > 0) {
+                            return;
+                        }
+
+                        const isProtocolError =
+                            message.includes('ERR_HTTP2_PROTOCOL_ERROR') ||
+                            message.includes('TypeError: Failed to fetch') ||
+                            message.includes('NetworkError');
+
+                        if (!isProtocolError) {
+                            throw error;
+                        }
+
+                        await streamTextChat({
+                            sessionId: currentSessionId,
+                            message: trimmed,
+                            onDelta: handleDelta,
+                            onError: (code) => {
+                                setErrorMessage(`스트리밍 오류: ${code}`);
+                            }
+                        });
+                    }
                 } else {
                     await streamTextChat({
                         sessionId: currentSessionId,
@@ -165,6 +261,18 @@ export default function Chatbot({ isOpen, onClose, onOpen }: ChatbotProps) {
                     updateMessage(assistantMessageId, '응답이 비어 있습니다.');
                 }
             } else {
+                if (isGuestChatMode) {
+                    appendMessage('assistant', '편집 챗봇은 로그인 연결 후 사용할 수 있습니다.');
+                    return;
+                }
+
+                if (!isLoggedIn) {
+                    appendMessage('assistant', '로그인 후 편집 챗봇을 사용할 수 있습니다.');
+                    return;
+                }
+
+                const currentSessionId = await ensureSessionId();
+
                 const reply = await sendEditChat({
                     chatSessionId: currentSessionId,
                     editSessionId,
@@ -179,6 +287,42 @@ export default function Chatbot({ isOpen, onClose, onOpen }: ChatbotProps) {
             }
         } catch (error: unknown) {
             const message = error instanceof Error ? error.message : '메시지 전송 중 오류가 발생했습니다.';
+            setErrorMessage(message);
+        } finally {
+            setIsSending(false);
+        }
+    };
+
+    const handleFolderConfirm = async (accepted: boolean) => {
+        if (!folderPreview || folderPreview.status !== 'pending') return;
+
+        setIsSending(true);
+        setErrorMessage('');
+
+        try {
+            const response = await confirmAutoFolder({
+                accepted,
+                folderName: folderPreview.folderName,
+                photoIds: folderPreview.photoIds
+            });
+
+            setFolderPreview((prev) => {
+                if (!prev) return prev;
+                return { ...prev, status: accepted ? 'accepted' : 'rejected' };
+            });
+
+            if (accepted) {
+                appendMessage(
+                    'assistant',
+                    response.folderId
+                        ? `폴더가 생성되었습니다. (folderId: ${response.folderId})`
+                        : '폴더 생성이 완료되었습니다.'
+                );
+            } else {
+                appendMessage('assistant', '폴더 생성을 취소했습니다.');
+            }
+        } catch (error: unknown) {
+            const message = error instanceof Error ? error.message : '폴더 생성 확정 중 오류가 발생했습니다.';
             setErrorMessage(message);
         } finally {
             setIsSending(false);
@@ -236,6 +380,24 @@ export default function Chatbot({ isOpen, onClose, onOpen }: ChatbotProps) {
                                     {message.content || '...'}
                                 </div>
                             ))}
+                            {folderPreview && folderPreview.status === 'pending' ? (
+                                <div className="folder-preview-actions">
+                                    <button
+                                        className="folder-preview-btn accept"
+                                        onClick={() => void handleFolderConfirm(true)}
+                                        disabled={isSending}
+                                    >
+                                        수락
+                                    </button>
+                                    <button
+                                        className="folder-preview-btn reject"
+                                        onClick={() => void handleFolderConfirm(false)}
+                                        disabled={isSending}
+                                    >
+                                        거절
+                                    </button>
+                                </div>
+                            ) : null}
                             {errorMessage ? (
                                 <div className="chat-error-text">{errorMessage}</div>
                             ) : null}
@@ -272,7 +434,7 @@ export default function Chatbot({ isOpen, onClose, onOpen }: ChatbotProps) {
                     <div className="input-field-pill">
                         <input
                             type="text"
-                            placeholder={isSending ? '응답 생성 중...' : '메시지를 입력하세요...'}
+                            placeholder={isSending ? '응답 생성 중...' : (isGuestChatMode ? '게스트 모드: 메시지를 입력하세요...' : '메시지를 입력하세요...')}
                             className="chat-input"
                             value={input}
                             onChange={(event) => setInput(event.target.value)}

@@ -1,4 +1,5 @@
 type JsonRecord = Record<string, unknown>;
+import { authFetch } from './auth';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '';
 
@@ -20,6 +21,40 @@ function asNumber(value: unknown): number {
         if (Number.isFinite(parsed)) return parsed;
     }
     return 0;
+}
+
+function asJsonRecord(value: unknown): JsonRecord | null {
+    if (!value || typeof value !== 'object') return null;
+    return value as JsonRecord;
+}
+
+function extractItems(payload: JsonRecord): JsonRecord[] {
+    const directItems = payload.items;
+    if (Array.isArray(directItems)) {
+        return directItems.filter((item): item is JsonRecord => !!asJsonRecord(item));
+    }
+
+    const nested = asJsonRecord(payload.data);
+    const nestedItems = nested?.items;
+    if (Array.isArray(nestedItems)) {
+        return nestedItems.filter((item): item is JsonRecord => !!asJsonRecord(item));
+    }
+
+    return [];
+}
+
+async function buildHttpError(response: Response, fallbackMessage: string): Promise<Error> {
+    let detail = '';
+    try {
+        detail = (await response.text()).trim();
+    } catch {
+        detail = '';
+    }
+
+    const suffix = detail
+        ? ` (${response.status} ${response.statusText}: ${detail})`
+        : ` (${response.status} ${response.statusText})`;
+    return new Error(`${fallbackMessage}${suffix}`);
 }
 
 function normalizeEtag(rawEtag: string): string {
@@ -53,20 +88,20 @@ export type UploadCommitResultItem = {
 };
 
 export async function initPhotoUpload(items: UploadInitInputItem[]): Promise<UploadInitResultItem[]> {
-    const response = await fetch(toApiUrl('/api/photos/upload/init'), {
+    const response = await authFetch(toApiUrl('/api/photos/upload/init'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ items })
     });
 
     if (!response.ok) {
-        throw new Error('업로드 초기화에 실패했습니다.');
+        throw await buildHttpError(response, '업로드 초기화에 실패했습니다.');
     }
 
-    const payload = (await response.json()) as { items?: JsonRecord[] };
-    if (!Array.isArray(payload.items)) return [];
+    const payload = (await response.json()) as JsonRecord;
+    const parsedItems = extractItems(payload);
 
-    return payload.items.map((item) => ({
+    return parsedItems.map((item) => ({
         photoId: asNumber(item.photoId),
         originalKey: asText(item.originalKey),
         uploadUrl: asText(item.uploadUrl),
@@ -115,20 +150,20 @@ export async function putFileToPresignedUrl(
 }
 
 export async function commitPhotoUpload(items: UploadCommitInputItem[]): Promise<UploadCommitResultItem[]> {
-    const response = await fetch(toApiUrl('/api/photos/upload/commit'), {
+    const response = await authFetch(toApiUrl('/api/photos/upload/commit'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ items })
     });
 
     if (!response.ok) {
-        throw new Error('업로드 완료 처리에 실패했습니다.');
+        throw await buildHttpError(response, '업로드 완료 처리에 실패했습니다.');
     }
 
-    const payload = (await response.json()) as { items?: JsonRecord[] };
-    if (!Array.isArray(payload.items)) return [];
+    const payload = (await response.json()) as JsonRecord;
+    const parsedItems = extractItems(payload);
 
-    return payload.items.map((item) => ({
+    return parsedItems.map((item) => ({
         photoId: asNumber(item.photoId),
         previewUrl: asText(item.previewUrl)
     }));

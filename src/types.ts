@@ -3,4 +3,7 @@ export interface Photo {
     thumbnailUrl: string;
     likeCount: number;
     title?: string;
+    previewUrl?: string;
+    originalUrl?: string;
+    shotAt?: string;
 }

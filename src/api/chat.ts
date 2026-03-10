@@ -1,4 +1,5 @@
 type JsonRecord = Record<string, unknown>;
+import { authFetch } from './auth';
 type SearchResultItem = {
     postId: number;
     title: string;
@@ -13,6 +14,21 @@ type SendEditChatResponse = {
     assistantMessageId: number;
     assistantContent: string;
     editedUrl: string;
+};
+
+export type ChatFolderPreviewPhoto = {
+    photoId: number;
+    previewUrl: string;
+    shotAt: string;
+};
+
+export type ChatFolderPreviewResponse = {
+    suggestedFolderName: string;
+    photos: ChatFolderPreviewPhoto[];
+};
+
+export type ChatFolderConfirmResponse = {
+    folderId: number | null;
 };
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '';
@@ -117,19 +133,35 @@ function parseResultsItems(data: string): SearchResultItem[] {
     }
 }
 
+async function buildHttpError(response: Response, fallbackMessage: string): Promise<Error> {
+    let detail = '';
+    try {
+        detail = (await response.text()).trim();
+    } catch {
+        detail = '';
+    }
+
+    const suffix = detail
+        ? ` (${response.status} ${response.statusText}: ${detail})`
+        : ` (${response.status} ${response.statusText})`;
+    return new Error(`${fallbackMessage}${suffix}`);
+}
+
 export async function startChatSession(): Promise<number> {
-    const response = await fetch(toApiUrl('/api/chat/sessions/start'), {
+    const response = await authFetch(toApiUrl('/api/chat/sessions/start'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({})
     });
 
     if (!response.ok) {
-        throw new Error('채팅 세션 생성에 실패했습니다.');
+        throw await buildHttpError(response, '채팅 세션 생성에 실패했습니다.');
     }
 
-    const data = (await response.json()) as JsonRecord;
+    const raw = (await response.json()) as unknown;
+    const data = (typeof raw === 'object' && raw !== null ? raw : {}) as JsonRecord;
     const sessionId =
+        asNumber(raw) ||
         asNumber(data.chatSessionId) ||
         asNumber(data.chat_session_id) ||
         asNumber(data.sessionId) ||
@@ -154,9 +186,12 @@ export async function streamSearchChat(
         onResults?: (items: SearchResultItem[]) => void;
     }
 ): Promise<void> {
-    const response = await fetch(toApiUrl('/api/chat/search/stream'), {
+    const response = await authFetch(toApiUrl('/api/chat/search/stream'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+            'Content-Type': 'application/json',
+            Accept: 'text/event-stream'
+        },
         body: JSON.stringify({
             chatSessionId: params.sessionId,
             userText: params.message
@@ -164,7 +199,7 @@ export async function streamSearchChat(
     });
 
     if (!response.ok) {
-        throw new Error('검색 스트리밍 요청에 실패했습니다.');
+        throw await buildHttpError(response, '검색 스트리밍 요청에 실패했습니다.');
     }
 
     if (!response.body) {
@@ -176,6 +211,7 @@ export async function streamSearchChat(
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let pending = '';
+    let emittedAnyDelta = false;
 
     const consumeBlock = (block: string) => {
         if (!block.trim()) return;
@@ -191,6 +227,7 @@ export async function streamSearchChat(
         }
 
         if (eventType === 'delta') {
+            emittedAnyDelta = true;
             params.onDelta(data);
             return;
         }
@@ -201,19 +238,28 @@ export async function streamSearchChat(
 
         const parsed = parseStreamLine(data);
         if (parsed.done) return;
-        if (parsed.text) params.onDelta(parsed.text);
+        if (parsed.text) {
+            emittedAnyDelta = true;
+            params.onDelta(parsed.text);
+        }
     };
 
-    while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
 
-        pending += decoder.decode(value, { stream: true });
-        const blocks = pending.split(/\r?\n\r?\n/);
-        pending = blocks.pop() ?? '';
+            pending += decoder.decode(value, { stream: true });
+            const blocks = pending.split(/\r?\n\r?\n/);
+            pending = blocks.pop() ?? '';
 
-        for (const block of blocks) {
-            consumeBlock(block);
+            for (const block of blocks) {
+                consumeBlock(block);
+            }
+        }
+    } catch (error) {
+        if (!emittedAnyDelta) {
+            throw error;
         }
     }
 
@@ -231,9 +277,12 @@ export async function streamTextChat(
         onError?: (code: string) => void;
     }
 ): Promise<void> {
-    const response = await fetch(toApiUrl('/api/chat/stream'), {
+    const response = await authFetch(toApiUrl('/api/chat/stream'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+            'Content-Type': 'application/json',
+            Accept: 'text/event-stream'
+        },
         body: JSON.stringify({
             chatSessionId: params.sessionId,
             userText: params.message
@@ -241,7 +290,7 @@ export async function streamTextChat(
     });
 
     if (!response.ok) {
-        throw new Error('텍스트 스트리밍 요청에 실패했습니다.');
+        throw await buildHttpError(response, '텍스트 스트리밍 요청에 실패했습니다.');
     }
 
     if (!response.body) {
@@ -253,6 +302,7 @@ export async function streamTextChat(
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let pending = '';
+    let emittedAnyDelta = false;
 
     const consumeBlock = (block: string): boolean => {
         if (!block.trim()) return false;
@@ -260,6 +310,7 @@ export async function streamTextChat(
         const { eventType, data } = parseEventBlock(block);
 
         if (eventType === 'delta') {
+            emittedAnyDelta = true;
             params.onDelta(data);
             return false;
         }
@@ -277,21 +328,30 @@ export async function streamTextChat(
 
         const parsed = parseStreamLine(data);
         if (parsed.done) return true;
-        if (parsed.text) params.onDelta(parsed.text);
+        if (parsed.text) {
+            emittedAnyDelta = true;
+            params.onDelta(parsed.text);
+        }
         return false;
     };
 
-    while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
 
-        pending += decoder.decode(value, { stream: true });
-        const blocks = pending.split(/\r?\n\r?\n/);
-        pending = blocks.pop() ?? '';
+            pending += decoder.decode(value, { stream: true });
+            const blocks = pending.split(/\r?\n\r?\n/);
+            pending = blocks.pop() ?? '';
 
-        for (const block of blocks) {
-            const shouldStop = consumeBlock(block);
-            if (shouldStop) return;
+            for (const block of blocks) {
+                const shouldStop = consumeBlock(block);
+                if (shouldStop) return;
+            }
+        }
+    } catch (error) {
+        if (!emittedAnyDelta) {
+            throw error;
         }
     }
 
@@ -310,13 +370,13 @@ export async function sendEditChat(
         userText: params.userText
     });
 
-    const response = await fetch(`${toApiUrl('/api/chat/send-edit')}?${query.toString()}`, {
+    const response = await authFetch(`${toApiUrl('/api/chat/send-edit')}?${query.toString()}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' }
     });
 
     if (!response.ok) {
-        throw new Error('편집 메시지 전송에 실패했습니다.');
+        throw await buildHttpError(response, '편집 메시지 전송에 실패했습니다.');
     }
 
     const data = (await response.json()) as JsonRecord;
@@ -336,6 +396,66 @@ export async function sendEditChat(
         editedUrl:
             asText(data.editedUrl) ||
             asText((data.data as JsonRecord | undefined)?.editedUrl)
+    };
+}
+
+export async function previewAutoFolder(
+    params: { chatSessionId: number; userText: string; topK?: number }
+): Promise<ChatFolderPreviewResponse> {
+    const response = await authFetch(toApiUrl('/api/chat/folders/preview'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            chatSessionId: params.chatSessionId,
+            userText: params.userText,
+            ...(typeof params.topK === 'number' ? { topK: params.topK } : {})
+        })
+    });
+
+    if (!response.ok) {
+        throw await buildHttpError(response, 'AI 자동 폴더 미리보기에 실패했습니다.');
+    }
+
+    const payload = (await response.json()) as JsonRecord;
+    const data = (payload.data as JsonRecord | undefined) ?? payload;
+    const photosRaw = Array.isArray(data.photos) ? (data.photos as JsonRecord[]) : [];
+
+    return {
+        suggestedFolderName: asText(data.suggestedFolderName),
+        photos: photosRaw.map((item) => ({
+            photoId: asNumber(item.photoId),
+            previewUrl: asText(item.previewUrl),
+            shotAt: asText(item.shotAt)
+        }))
+    };
+}
+
+export async function confirmAutoFolder(
+    params: { accepted: boolean; folderName: string; photoIds: number[] }
+): Promise<ChatFolderConfirmResponse> {
+    const response = await authFetch(toApiUrl('/api/chat/folders/confirm'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            accepted: params.accepted,
+            folderName: params.folderName,
+            photoIds: params.photoIds
+        })
+    });
+
+    if (!response.ok) {
+        throw await buildHttpError(response, 'AI 자동 폴더 생성 확정에 실패했습니다.');
+    }
+
+    const payload = (await response.json()) as JsonRecord;
+    const data = (payload.data as JsonRecord | undefined) ?? payload;
+    const folderId =
+        asNumber(data.folderId) ||
+        asNumber(payload.folderId) ||
+        asNumber((payload.data as JsonRecord | undefined)?.folderId);
+
+    return {
+        folderId: folderId > 0 ? folderId : null
     };
 }
 
