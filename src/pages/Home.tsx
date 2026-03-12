@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import Navbar from '../components/Navbar';
 import Sidebar from '../components/Sidebar';
 import Chatbot from '../components/Chatbot';
@@ -7,7 +7,8 @@ import PhotoPreview from '../components/Photopreview';
 import FolderView from '../components/Folderview';
 import FolderModal from '../components/Foldermodal';
 import SharedFolderModal from '../components/Sharedfoldermodal';
-import NotificationPanel from '../components/Notificationpanel';
+import AddPhotosModal from '../components/AddPhotosModal';
+import NotificationPanel, { type AppNotificationItem } from '../components/Notificationpanel';
 import InviteModal from '../components/Invitemodal';
 import TrashView from '../components/Trashview'; 
 import ActionModal from '../components/Actionmodal'; 
@@ -24,6 +25,7 @@ import {
 } from '../api/auth';
 import { createPhoto, getAlbumLatest, movePhotoToTrash } from '../api/photo';
 import { commitPhotoUpload, initPhotoUpload, putFileToPresignedUrl } from '../api/upload';
+import { getMyMember, type MemberProfile } from '../api/member';
 import '../styles/Home.css';
 
 type ViewType = 'home' | 'folder_list' | 'folder_detail' | 'shared_list' | 'shared_detail' | 'trash';
@@ -44,18 +46,82 @@ type UploadTask = {
     errorMessage?: string;
 };
 
+type UploadContext = {
+    view: ViewType;
+    selectedFolder: string | null;
+};
+
+type SharedFolderPhoto = {
+    photo: Photo;
+    addedByMe: boolean;
+};
+
+type AddPhotosConfirmState = {
+    folderName: string;
+    selectedPhotoIds: string[];
+    isSharedFolder: boolean;
+};
+
+type NotificationTargetView = 'folder_detail' | 'shared_detail';
+
+type HomeNotification = AppNotificationItem & {
+    targetFolder?: string;
+    targetView?: NotificationTargetView;
+    albumName?: string;
+};
+
 export default function Home() {
     const preferPhotoControllerUpload = true;
+    const formatDateText = (raw: string): string => {
+        if (!raw) return '-';
+        if (/^\d{4}\.\d{2}\.\d{2}$/.test(raw)) return raw;
+
+        const date = new Date(raw);
+        if (Number.isNaN(date.getTime())) return raw;
+
+        const y = date.getFullYear();
+        const m = String(date.getMonth() + 1).padStart(2, '0');
+        const d = String(date.getDate()).padStart(2, '0');
+        return `${y}.${m}.${d}`;
+    };
+
+    const todayDateText = formatDateText(new Date().toISOString());
+
+    const formatBytesToStorageText = (bytes: number): string => {
+        if (bytes >= 1024 * 1024 * 1024) {
+            return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+        }
+        if (bytes >= 1024 * 1024) {
+            return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+        }
+        if (bytes >= 1024) {
+            return `${Math.round(bytes / 1024)} KB`;
+        }
+        return `${bytes} B`;
+    };
+
     const [isLoggedIn, setIsLoggedIn] = useState<boolean>(isAuthenticated());
     const [view, setView] = useState<ViewType>('home');
     const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
     const [folders, setFolders] = useState<string[]>(['폴더 1']);
     const [folderStorageByName, setFolderStorageByName] = useState<Record<string, string>>({
-        '폴더 1': '1.2 GB',
+        '폴더 1': '0 MB',
+    });
+    const [folderCreatedAtByName, setFolderCreatedAtByName] = useState<Record<string, string>>({
+        '폴더 1': todayDateText,
     });
     const [sharedFolders, setSharedFolders] = useState<string[]>(['공유 폴더 1']);
     const [sharedFolderStorageByName, setSharedFolderStorageByName] = useState<Record<string, string>>({
-        '공유 폴더 1': '11.8 GB',
+        '공유 폴더 1': '0 MB',
+    });
+    const [sharedFolderCreatedAtByName, setSharedFolderCreatedAtByName] = useState<Record<string, string>>({
+        '공유 폴더 1': todayDateText,
+    });
+    const [folderPhotoIdsByName, setFolderPhotoIdsByName] = useState<Record<string, string[]>>({
+        '폴더 1': []
+    });
+    const [sharedFolderPhotosByName, setSharedFolderPhotosByName] = useState<Record<string, SharedFolderPhoto[]>>({
+        '공유 폴더 1': []
     });
     const [isSidebarOpen, setIsSidebarOpen] = useState(true);
     const [isChatOpen, setIsChatOpen] = useState(true);
@@ -73,11 +139,18 @@ export default function Home() {
     const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
     const [isUploading, setIsUploading] = useState(false);
     const [uploadItems, setUploadItems] = useState<UploadTask[]>([]);
+    const [isAddPhotosModalOpen, setIsAddPhotosModalOpen] = useState(false);
+    const [selectedPhotoIdsForAdd, setSelectedPhotoIdsForAdd] = useState<string[]>([]);
+    const [addPhotosConfirm, setAddPhotosConfirm] = useState<AddPhotosConfirmState | null>(null);
+    const [notifications, setNotifications] = useState<HomeNotification[]>([]);
 
     const [modalConfig, setModalConfig] = useState<{type: 'restore' | 'delete_confirm' | 'alert', message: string} | null>(null);
     const [isStorageModalOpen, setIsStorageModalOpen] = useState(false);
 
-    const [photos, setPhotos] = useState<Photo[]>([]);
+    const [myPhotos, setMyPhotos] = useState<Photo[]>([]);
+    const [photoSizeBytesById, setPhotoSizeBytesById] = useState<Record<string, number>>({});
+    const [memberProfile, setMemberProfile] = useState<MemberProfile | null>(null);
+    const uploadNotificationStatusRef = useRef<Record<string, UploadTaskStatus>>({});
 
     useEffect(() => {
         let mounted = true;
@@ -112,32 +185,160 @@ export default function Home() {
     const handleLogout = () => {
         clearAuthTokens();
         setIsLoggedIn(false);
-        setPhotos([]);
+        setMemberProfile(null);
+        setMyPhotos([]);
+        setNotifications([]);
+        uploadNotificationStatusRef.current = {};
         window.alert('로그아웃되었습니다.');
     };
 
-    const loadAlbum = async () => {
+    const pushNotification = (notification: Omit<HomeNotification, 'id' | 'createdAt' | 'read'>) => {
+        setNotifications((prev) => [
+            {
+                ...notification,
+                id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                createdAt: Date.now(),
+                read: false
+            },
+            ...prev
+        ].slice(0, 30));
+    };
+
+    const loadMyProfile = async () => {
         if (!isAuthenticated()) return;
 
         try {
+            const profile = await getMyMember();
+            setMemberProfile(profile);
+        } catch (error: unknown) {
+            setMemberProfile(null);
+            const message = error instanceof Error ? error.message : '내 정보 조회에 실패했습니다.';
+            window.alert(message);
+        }
+    };
+
+    const loadAlbum = async (): Promise<Photo[]> => {
+        if (!isAuthenticated()) return [];
+
+        try {
             const items = await getAlbumLatest({ size: 60 });
-            setPhotos(items.map((item) => ({
+            const normalized = items.map((item) => ({
                 id: String(item.photoId),
                 thumbnailUrl: item.thumbnailUrl || item.previewUrl,
                 previewUrl: item.previewUrl,
                 shotAt: item.shotAt,
                 likeCount: 0
-            })));
+            }));
+            setMyPhotos(normalized);
+            setPhotoSizeBytesById((prev) => {
+                const next: Record<string, number> = {};
+                normalized.forEach((photo) => {
+                    next[photo.id] = prev[photo.id] ?? 0;
+                });
+                return next;
+            });
+            return normalized;
         } catch (error: unknown) {
             const message = error instanceof Error ? error.message : '앨범을 불러오지 못했습니다.';
             window.alert(message);
+            return [];
+        }
+    };
+
+    const appendUploadedPhotosToCurrentLocation = (
+        uploadedPhotos: Photo[],
+        context: UploadContext
+    ) => {
+        if (!uploadedPhotos.length) return;
+
+        if (context.view === 'folder_detail' && context.selectedFolder) {
+            const folderName = context.selectedFolder;
+            const uploadedIds = uploadedPhotos.map((photo) => photo.id);
+
+            setFolderPhotoIdsByName((prev) => {
+                const currentIds = prev[folderName] ?? [];
+                return {
+                    ...prev,
+                    [folderName]: Array.from(new Set([...uploadedIds, ...currentIds]))
+                };
+            });
+
+            return;
+        }
+
+        if (context.view === 'shared_detail' && context.selectedFolder) {
+            const folderName = context.selectedFolder;
+            const uploadedIds = new Set(uploadedPhotos.map((photo) => photo.id));
+
+            setSharedFolderPhotosByName((prev) => {
+                const currentEntries = prev[folderName] ?? [];
+                const nextEntries: SharedFolderPhoto[] = [
+                    ...uploadedPhotos.map((photo) => ({ photo, addedByMe: true })),
+                    ...currentEntries.filter((entry) => !uploadedIds.has(entry.photo.id))
+                ];
+
+                return {
+                    ...prev,
+                    [folderName]: nextEntries
+                };
+            });
         }
     };
 
     useEffect(() => {
         if (!isLoggedIn) return;
         void loadAlbum();
+        void loadMyProfile();
     }, [isLoggedIn]);
+
+    useEffect(() => {
+        uploadItems.forEach((task) => {
+            const previousStatus = uploadNotificationStatusRef.current[task.id];
+            const shouldNotify =
+                (task.status === 'done' || task.status === 'error') &&
+                previousStatus !== task.status;
+
+            if (shouldNotify) {
+                pushNotification({
+                    kind: 'upload',
+                    title: task.status === 'done' ? '업로드 완료' : '업로드 실패',
+                    message:
+                        task.status === 'done'
+                            ? `${task.filename} 업로드가 완료되었습니다.`
+                            : task.errorMessage || `${task.filename} 업로드에 실패했습니다.`,
+                    progress: task.progress,
+                    uploadStatus: task.status === 'done' ? 'done' : 'error',
+                    errorMessage: task.errorMessage
+                });
+            }
+
+            uploadNotificationStatusRef.current[task.id] = task.status;
+        });
+    }, [uploadItems]);
+
+    useEffect(() => {
+        setFolderStorageByName((prev) => {
+            const next: Record<string, string> = {};
+            folders.forEach((folderName) => {
+                const photoIds = folderPhotoIdsByName[folderName] ?? [];
+                const totalBytes = photoIds.reduce((sum, photoId) => sum + (photoSizeBytesById[photoId] ?? 0), 0);
+                next[folderName] = formatBytesToStorageText(totalBytes);
+            });
+            return { ...prev, ...next };
+        });
+    }, [folders, folderPhotoIdsByName, photoSizeBytesById]);
+
+    useEffect(() => {
+        setSharedFolderStorageByName((prev) => {
+            const next: Record<string, string> = {};
+            sharedFolders.forEach((folderName) => {
+                const photos = sharedFolderPhotosByName[folderName] ?? [];
+                const totalBytes = photos.reduce((sum, entry) => sum + (photoSizeBytesById[entry.photo.id] ?? 0), 0);
+                next[folderName] = formatBytesToStorageText(totalBytes);
+            });
+            return { ...prev, ...next };
+        });
+    }, [sharedFolders, sharedFolderPhotosByName, photoSizeBytesById]);
 
     const updateUploadTask = (id: string, patch: Partial<UploadTask>) => {
         setUploadItems((prev) => prev.map((task) => (task.id === id ? { ...task, ...patch } : task)));
@@ -165,12 +366,19 @@ export default function Home() {
         setUploadItems(initialTasks);
         setIsUploading(true);
 
+        const uploadContext: UploadContext = {
+            view,
+            selectedFolder
+        };
+
+        const beforeMyPhotoIds = new Set(myPhotos.map((photo) => photo.id));
+
         const isUnauthorizedError = (error: unknown): boolean => {
             if (!(error instanceof Error)) return false;
             return error.message.includes('401') || error.message.includes('Unauthorized');
         };
 
-        const uploadViaPhotoController = async () => {
+        const uploadViaPhotoController = async (): Promise<void> => {
             for (const task of initialTasks) {
                 try {
                     updateUploadTask(task.id, { status: 'uploading', progress: 35, errorMessage: undefined });
@@ -183,7 +391,16 @@ export default function Home() {
                 }
             }
 
-            await loadAlbum();
+            const refreshed = await loadAlbum();
+            const uploadedPhotos = refreshed.filter((photo) => !beforeMyPhotoIds.has(photo.id));
+            setPhotoSizeBytesById((prev) => {
+                const next = { ...prev };
+                uploadedPhotos.forEach((photo, index) => {
+                    next[photo.id] = initialTasks[index]?.file.size ?? next[photo.id] ?? 0;
+                });
+                return next;
+            });
+            appendUploadedPhotosToCurrentLocation(uploadedPhotos, uploadContext);
         };
 
         if (preferPhotoControllerUpload) {
@@ -334,7 +551,16 @@ export default function Home() {
                     }));
 
                     if (commitResults.length > 0) {
-                        await loadAlbum();
+                        const refreshed = await loadAlbum();
+                        const uploadedPhotos = refreshed.filter((photo) => !beforeMyPhotoIds.has(photo.id));
+                        setPhotoSizeBytesById((prev) => {
+                            const next = { ...prev };
+                            uploadedPhotos.forEach((photo, index) => {
+                                next[photo.id] = readyTasks[index]?.file.size ?? next[photo.id] ?? 0;
+                            });
+                            return next;
+                        });
+                        appendUploadedPhotosToCurrentLocation(uploadedPhotos, uploadContext);
                     }
                 } catch {
                     setUploadItems((prev) => prev.map((task) => (
@@ -393,8 +619,17 @@ export default function Home() {
 
             setFolders((prev) => [...prev, trimmed]);
             setFolderStorageByName((prev) => ({ ...prev, [trimmed]: '0 MB' }));
+            setFolderCreatedAtByName((prev) => ({ ...prev, [trimmed]: todayDateText }));
+            setFolderPhotoIdsByName((prev) => ({ ...prev, [trimmed]: [] }));
             setSelectedFolder(trimmed);
             setView('folder_detail');
+            pushNotification({
+                kind: 'folder',
+                title: '폴더 생성됨',
+                message: `'${trimmed}' 폴더가 생성되었습니다.`,
+                targetFolder: trimmed,
+                targetView: 'folder_detail'
+            });
         } else {
             setFolders((prev) => prev.map((folder) => folder === selectedFolderForSettings ? trimmed : folder));
             setFolderStorageByName((prev) => {
@@ -402,6 +637,20 @@ export default function Home() {
                 const next = { ...prev };
                 delete next[selectedFolderForSettings];
                 next[trimmed] = currentStorage;
+                return next;
+            });
+            setFolderPhotoIdsByName((prev) => {
+                const currentPhotoIds = prev[selectedFolderForSettings] ?? [];
+                const next = { ...prev };
+                delete next[selectedFolderForSettings];
+                next[trimmed] = currentPhotoIds;
+                return next;
+            });
+            setFolderCreatedAtByName((prev) => {
+                const currentCreatedAt = prev[selectedFolderForSettings] ?? todayDateText;
+                const next = { ...prev };
+                delete next[selectedFolderForSettings];
+                next[trimmed] = currentCreatedAt;
                 return next;
             });
             if (selectedFolder === selectedFolderForSettings) {
@@ -416,6 +665,16 @@ export default function Home() {
         const target = selectedFolderForSettings;
         setFolders((prev) => prev.filter((folder) => folder !== target));
         setFolderStorageByName((prev) => {
+            const next = { ...prev };
+            delete next[target];
+            return next;
+        });
+        setFolderPhotoIdsByName((prev) => {
+            const next = { ...prev };
+            delete next[target];
+            return next;
+        });
+        setFolderCreatedAtByName((prev) => {
             const next = { ...prev };
             delete next[target];
             return next;
@@ -444,9 +703,18 @@ export default function Home() {
 
             setSharedFolders((prev) => [...prev, trimmed]);
             setSharedFolderStorageByName((prev) => ({ ...prev, [trimmed]: '0 MB' }));
+            setSharedFolderCreatedAtByName((prev) => ({ ...prev, [trimmed]: todayDateText }));
+            setSharedFolderPhotosByName((prev) => ({ ...prev, [trimmed]: [] }));
             setSelectedFolder(trimmed);
             setView('shared_detail');
             setSelectedSharedFolderForSettings(trimmed);
+            pushNotification({
+                kind: 'shared_folder',
+                title: '공유 폴더 생성됨',
+                message: `'${trimmed}' 공유 폴더가 생성되었습니다.`,
+                targetFolder: trimmed,
+                targetView: 'shared_detail'
+            });
         } else {
             setSharedFolders((prev) =>
                 prev.map((folder) =>
@@ -459,6 +727,20 @@ export default function Home() {
                 const next = { ...prev };
                 delete next[selectedSharedFolderForSettings];
                 next[trimmed] = currentStorage;
+                return next;
+            });
+            setSharedFolderPhotosByName((prev) => {
+                const currentPhotos = prev[selectedSharedFolderForSettings] ?? [];
+                const next = { ...prev };
+                delete next[selectedSharedFolderForSettings];
+                next[trimmed] = currentPhotos;
+                return next;
+            });
+            setSharedFolderCreatedAtByName((prev) => {
+                const currentCreatedAt = prev[selectedSharedFolderForSettings] ?? todayDateText;
+                const next = { ...prev };
+                delete next[selectedSharedFolderForSettings];
+                next[trimmed] = currentCreatedAt;
                 return next;
             });
 
@@ -481,6 +763,16 @@ export default function Home() {
             delete next[target];
             return next;
         });
+        setSharedFolderPhotosByName((prev) => {
+            const next = { ...prev };
+            delete next[target];
+            return next;
+        });
+        setSharedFolderCreatedAtByName((prev) => {
+            const next = { ...prev };
+            delete next[target];
+            return next;
+        });
 
         if (selectedFolder === target) {
             setSelectedFolder(null);
@@ -496,13 +788,144 @@ export default function Home() {
         view === 'shared_list' ? 'shared_parent' :
         `shared_child:${selectedFolder || ''}`;
 
-    const uploadNotificationItems = uploadItems.filter((item) => item.status !== 'queued');
-    const notificationCount = 1 + uploadNotificationItems.length;
+    const notificationCount = notifications.filter((item) => !item.read).length;
+
+    const myPhotoMap = new Map(myPhotos.map((photo) => [photo.id, photo]));
+    const folderPhotos = selectedFolder
+        ? (folderPhotoIdsByName[selectedFolder] ?? [])
+            .map((photoId) => myPhotoMap.get(photoId))
+            .filter((photo): photo is Photo => !!photo)
+        : [];
+    const sharedPhotos = selectedFolder
+        ? (sharedFolderPhotosByName[selectedFolder] ?? []).map((entry) => entry.photo)
+        : [];
+
+    const currentViewPhotos =
+        view === 'home' ? myPhotos :
+        view === 'folder_detail' ? folderPhotos :
+        view === 'shared_detail' ? sharedPhotos :
+        [];
+
+    const TOTAL_STORAGE_BYTES = 50 * 1024 * 1024 * 1024;
+    const totalUsedStorageBytes = myPhotos.reduce((sum, photo) => sum + (photoSizeBytesById[photo.id] ?? 0), 0);
+    const remainingStorageBytes = Math.max(TOTAL_STORAGE_BYTES - totalUsedStorageBytes, 0);
+    const storagePercent = Math.min((totalUsedStorageBytes / TOTAL_STORAGE_BYTES) * 100, 100);
+    const usedStorageText = formatBytesToStorageText(totalUsedStorageBytes);
+    const remainingStorageText = formatBytesToStorageText(remainingStorageBytes);
+    const totalStorageText = formatBytesToStorageText(TOTAL_STORAGE_BYTES);
+
+    const isFolderDetailView = view === 'folder_detail' && !!selectedFolder;
+    const isSharedDetailView = view === 'shared_detail' && !!selectedFolder;
+    const canOpenAddPhotos = isFolderDetailView || isSharedDetailView;
+
+    const existingPhotoIdsForCurrentTarget = new Set<string>(
+        isFolderDetailView
+            ? (folderPhotoIdsByName[selectedFolder as string] ?? [])
+            : isSharedDetailView
+                ? (sharedFolderPhotosByName[selectedFolder as string] ?? []).map((entry) => entry.photo.id)
+                : []
+    );
+
+    const openAddPhotosModal = () => {
+        if (!canOpenAddPhotos) return;
+        setSelectedPhotoIdsForAdd([]);
+        setIsAddPhotosModalOpen(true);
+    };
+
+    const togglePhotoSelectionForAdd = (photoId: string) => {
+        setSelectedPhotoIdsForAdd((prev) => (
+            prev.includes(photoId)
+                ? prev.filter((id) => id !== photoId)
+                : [...prev, photoId]
+        ));
+    };
+
+    const requestAddSelectedPhotos = () => {
+        if (!selectedFolder || selectedPhotoIdsForAdd.length === 0) return;
+
+        setIsAddPhotosModalOpen(false);
+        setAddPhotosConfirm({
+            folderName: selectedFolder,
+            selectedPhotoIds: selectedPhotoIdsForAdd,
+            isSharedFolder: view === 'shared_detail'
+        });
+    };
+
+    const handleConfirmAddSelectedPhotos = () => {
+        if (!addPhotosConfirm) return;
+
+        const selectedIds = addPhotosConfirm.selectedPhotoIds;
+
+        if (addPhotosConfirm.isSharedFolder) {
+            setSharedFolderPhotosByName((prev) => {
+                const current = prev[addPhotosConfirm.folderName] ?? [];
+                const existingIds = new Set(current.map((entry) => entry.photo.id));
+                const additions: SharedFolderPhoto[] = selectedIds
+                    .map((photoId) => myPhotoMap.get(photoId))
+                    .filter((photo): photo is Photo => !!photo)
+                    .filter((photo) => !existingIds.has(photo.id))
+                    .map((photo) => ({ photo, addedByMe: true }));
+
+                return {
+                    ...prev,
+                    [addPhotosConfirm.folderName]: [...additions, ...current]
+                };
+            });
+        } else {
+            setFolderPhotoIdsByName((prev) => {
+                const current = prev[addPhotosConfirm.folderName] ?? [];
+                return {
+                    ...prev,
+                    [addPhotosConfirm.folderName]: Array.from(new Set([...selectedIds, ...current]))
+                };
+            });
+        }
+
+        setSelectedPhotoIdsForAdd([]);
+        setAddPhotosConfirm(null);
+        pushNotification({
+            kind: addPhotosConfirm.isSharedFolder ? 'shared_folder' : 'folder',
+            title: addPhotosConfirm.isSharedFolder ? '공유 폴더 사진 추가' : '폴더 사진 추가',
+            message: `${selectedIds.length}장의 사진이 '${addPhotosConfirm.folderName}'에 추가되었습니다.`,
+            targetFolder: addPhotosConfirm.folderName,
+            targetView: addPhotosConfirm.isSharedFolder ? 'shared_detail' : 'folder_detail'
+        });
+        setModalConfig({
+            type: 'alert',
+            message: `${selectedIds.length}장의 사진을 추가했습니다.`
+        });
+    };
+
+    const handleNotificationToggle = () => {
+        setIsNotiOpen((prev) => {
+            const next = !prev;
+            if (!prev) {
+                setNotifications((current) => current.map((item) => (
+                    item.read ? item : { ...item, read: true }
+                )));
+            }
+            return next;
+        });
+    };
+
+    const handleNotificationClick = (item: HomeNotification) => {
+        setIsNotiOpen(false);
+
+        if (item.kind === 'invite' && item.albumName) {
+            setShowInviteModal(true);
+            return;
+        }
+
+        if (item.targetView && item.targetFolder) {
+            setView(item.targetView);
+            setSelectedFolder(item.targetFolder);
+        }
+    };
 
     const handleDeleteCurrentPhoto = async () => {
         if (previewIndex === null) return;
 
-        const target = photos[previewIndex];
+        const target = currentViewPhotos[previewIndex];
         if (!target) return;
 
         const photoId = Number(target.id);
@@ -513,7 +936,21 @@ export default function Home() {
 
         try {
             await movePhotoToTrash(photoId);
-            setPhotos((prev) => prev.filter((photo) => photo.id !== target.id));
+            setMyPhotos((prev) => prev.filter((photo) => photo.id !== target.id));
+            setFolderPhotoIdsByName((prev) => {
+                const next: Record<string, string[]> = {};
+                Object.entries(prev).forEach(([name, photoIds]) => {
+                    next[name] = photoIds.filter((id) => id !== target.id);
+                });
+                return next;
+            });
+            setSharedFolderPhotosByName((prev) => {
+                const next: Record<string, SharedFolderPhoto[]> = {};
+                Object.entries(prev).forEach(([name, items]) => {
+                    next[name] = items.filter((item) => item.photo.id !== target.id);
+                });
+                return next;
+            });
             setPreviewIndex(null);
         } catch (error: unknown) {
             const message = error instanceof Error ? error.message : '사진 삭제에 실패했습니다.';
@@ -524,10 +961,13 @@ export default function Home() {
     return (
         <div className="home-container">
             <Navbar 
-                onNotiClick={() => setIsNotiOpen(!isNotiOpen)} 
+                onNotiClick={handleNotificationToggle} 
                 onUploadClick={() => setIsUploadModalOpen(true)} 
+                onLogoClick={() => handleNavigate('home')}
                 notificationCount={notificationCount}
                 isLoggedIn={isLoggedIn}
+                memberNickname={memberProfile?.nickname}
+                memberProfileImageUrl={memberProfile?.profileImageUrl}
                 onLoginClick={() => void handleLogin()}
                 onLogoutClick={handleLogout}
             />
@@ -550,7 +990,11 @@ export default function Home() {
                         setSelectedSharedFolderForSettings(`공유 폴더 ${sharedFolders.length + 1}`);
                         setIsSharedModalOpen(true);
                     }}
+                    remainingStorageText={remainingStorageText}
+                    totalStorageText={totalStorageText}
+                    storagePercent={storagePercent}
                     onStorageClick={() => setIsStorageModalOpen(true)}
+                    onLogoutClick={handleLogout}
                     onFolderSettingsClick={(name) => {
                         setFolderModalMode('settings');
                         setSelectedFolderForSettings(name);
@@ -567,13 +1011,20 @@ export default function Home() {
                     ${isSidebarOpen ? 'sidebar-open' : 'sidebar-closed'} 
                     ${isChatOpen ? 'chat-open' : 'chat-closed'}`}
                 >
-                    {selectedFolder && <h2 className="folder-title">{selectedFolder}</h2>}
+                    {selectedFolder && (isFolderDetailView || isSharedDetailView) ? (
+                        <div className="folder-title-row">
+                            <h2 className="folder-title">{selectedFolder}</h2>
+                            <button className="folder-add-photo-btn" onClick={openAddPhotosModal}>사진 추가</button>
+                        </div>
+                    ) : selectedFolder ? (
+                        <h2 className="folder-title">{selectedFolder}</h2>
+                    ) : null}
 
                     {view === 'trash' ? (
                         <TrashView isLoggedIn={isLoggedIn} onChanged={() => void loadAlbum()} />
                     ) : (view === 'home' || view === 'folder_detail' || view === 'shared_detail') ? (
                         <div className="photo-grid">
-                            {photos.map((photo, index) => (
+                            {currentViewPhotos.map((photo, index) => (
                                 <PhotoCard 
                                     key={photo.id} 
                                     photo={photo} 
@@ -598,17 +1049,8 @@ export default function Home() {
                     {isNotiOpen && (
                         <NotificationPanel 
                             onClose={() => setIsNotiOpen(false)} 
-                            onItemClick={() => {
-                                setIsNotiOpen(false);
-                                setShowInviteModal(true);
-                            }}
-                            uploadItems={uploadNotificationItems.map((item) => ({
-                                id: item.id,
-                                filename: item.filename,
-                                progress: item.progress,
-                                status: item.status,
-                                errorMessage: item.errorMessage
-                            }))}
+                            onItemClick={handleNotificationClick}
+                            notifications={notifications}
                         />
                     )}
 
@@ -633,12 +1075,12 @@ export default function Home() {
                 />
             </div>
 
-            {previewIndex !== null && (
+            {previewIndex !== null && currentViewPhotos[previewIndex] && (
                 <PhotoPreview 
-                    photo={photos[previewIndex]}
+                    photo={currentViewPhotos[previewIndex]}
                     onClose={() => setPreviewIndex(null)}
-                    onPrev={() => setPreviewIndex((previewIndex - 1 + photos.length) % photos.length)}
-                    onNext={() => setPreviewIndex((previewIndex + 1) % photos.length)}
+                    onPrev={() => setPreviewIndex((previewIndex - 1 + currentViewPhotos.length) % currentViewPhotos.length)}
+                    onNext={() => setPreviewIndex((previewIndex + 1) % currentViewPhotos.length)}
                     onDelete={() => void handleDeleteCurrentPhoto()}
                     onDownload={() => {}}
                 />
@@ -648,6 +1090,8 @@ export default function Home() {
                 <FolderModal
                     mode={folderModalMode}
                     folderName={selectedFolderForSettings}
+                    photoCount={(folderPhotoIdsByName[selectedFolderForSettings] ?? []).length}
+                    createdAt={folderCreatedAtByName[selectedFolderForSettings] ?? todayDateText}
                     usedStorage={folderStorageByName[selectedFolderForSettings] ?? '0 MB'}
                     onSave={handleSaveFolder}
                     onDelete={handleDeleteFolder}
@@ -659,6 +1103,9 @@ export default function Home() {
                 <SharedFolderModal
                     mode={sharedModalMode}
                     folderName={selectedSharedFolderForSettings}
+                    photoCount={(sharedFolderPhotosByName[selectedSharedFolderForSettings] ?? []).length}
+                    createdAt={sharedFolderCreatedAtByName[selectedSharedFolderForSettings] ?? todayDateText}
+                    usedStorage={sharedFolderStorageByName[selectedSharedFolderForSettings] ?? '0 MB'}
                     onSave={handleSaveSharedFolder}
                     onLeave={handleLeaveSharedFolder}
                     onClose={() => setIsSharedModalOpen(false)}
@@ -681,6 +1128,32 @@ export default function Home() {
                 />
             )}
 
+            {isAddPhotosModalOpen && selectedFolder && (
+                <AddPhotosModal
+                    folderName={selectedFolder}
+                    photos={myPhotos}
+                    selectedPhotoIds={selectedPhotoIdsForAdd}
+                    existingPhotoIds={existingPhotoIdsForCurrentTarget}
+                    onToggle={togglePhotoSelectionForAdd}
+                    onClose={() => {
+                        setIsAddPhotosModalOpen(false);
+                        setSelectedPhotoIdsForAdd([]);
+                    }}
+                    onSubmit={requestAddSelectedPhotos}
+                />
+            )}
+
+            {addPhotosConfirm && (
+                <ActionModal
+                    config={{
+                        type: 'delete_confirm',
+                        message: `${addPhotosConfirm.selectedPhotoIds.length}장의 사진을 '${addPhotosConfirm.folderName}'에 추가하시겠습니까?`
+                    }}
+                    onClose={() => setAddPhotosConfirm(null)}
+                    onConfirm={handleConfirmAddSelectedPhotos}
+                />
+            )}
+
             {modalConfig && (
                 <ActionModal 
                     config={modalConfig} 
@@ -697,6 +1170,9 @@ export default function Home() {
 
             {isStorageModalOpen && (
                 <StorageUsageModal
+                    totalStorageText={totalStorageText}
+                    usedStorageText={usedStorageText}
+                    remainingStorageText={remainingStorageText}
                     folderUsages={folders.map((name) => ({
                         name,
                         storage: folderStorageByName[name] ?? '0 MB',

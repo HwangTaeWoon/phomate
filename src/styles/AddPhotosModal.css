@@ -1,0 +1,115 @@
+.add-photos-modal {
+    width: min(920px, 92vw);
+    max-height: 86vh;
+    background: #ffffff;
+    border-radius: 24px;
+    box-shadow: 0 20px 60px -12px rgba(0, 0, 0, 0.2);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.add-photos-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 16px;
+    padding: 24px 24px 16px;
+    border-bottom: 1px solid #e5e7eb;
+}
+
+.add-photos-title {
+    margin: 0;
+    font-size: 22px;
+    font-weight: 800;
+    color: #0f172a;
+}
+
+.add-photos-subtitle {
+    margin: 8px 0 0;
+    font-size: 13px;
+    color: #64748b;
+}
+
+.add-photos-body {
+    padding: 16px 24px;
+    overflow: auto;
+}
+
+.add-photos-empty {
+    margin: 20px 0;
+    color: #64748b;
+    font-weight: 600;
+}
+
+.add-photos-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 12px;
+}
+
+.add-photo-item {
+    border: 1px solid #e5e7eb;
+    background: #ffffff;
+    border-radius: 12px;
+    overflow: hidden;
+    padding: 0;
+    cursor: pointer;
+    text-align: left;
+}
+
+.add-photo-item img {
+    display: block;
+    width: 100%;
+    height: 110px;
+    object-fit: cover;
+}
+
+.add-photo-item-footer {
+    font-size: 12px;
+    font-weight: 700;
+    color: #1e293b;
+    padding: 8px 10px;
+    border-top: 1px solid #e5e7eb;
+}
+
+.add-photo-item.selected {
+    border-color: #003366;
+    box-shadow: 0 0 0 2px rgba(0, 51, 102, 0.12);
+}
+
+.add-photo-item:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.add-photos-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 24px 20px;
+    border-top: 1px solid #e5e7eb;
+}
+
+.add-photos-count {
+    font-size: 13px;
+    font-weight: 700;
+    color: #334155;
+}
+
+.add-photos-submit-btn {
+    border: none;
+    background: #003366;
+    color: #ffffff;
+    border-radius: 10px;
+    font-size: 13px;
+    font-weight: 700;
+    padding: 10px 14px;
+    cursor: pointer;
+}
+
+.add-photos-submit-btn:disabled {
+    background: #94a3b8;
+    cursor: not-allowed;
+}

@@ -1,11 +1,14 @@
 import React, { useEffect, useState } from 'react';
-import { X, Crown, Link, UserPlus, Trash2, Check } from 'lucide-react';
+import { X, Crown, Link, UserPlus, Trash2, Check, Calendar, Image as ImageIcon, HardDrive } from 'lucide-react';
 import ActionModal from './Actionmodal';
 import '../styles/SharedFolderModal.css';
 
 interface SharedFolderModalProps {
   mode?: 'create' | 'settings';
   folderName: string;
+  photoCount?: number;
+  createdAt?: string;
+  usedStorage?: string;
   onSave: (nextName: string) => boolean | void;
   onLeave?: () => void;
   onClose: () => void;
@@ -18,7 +21,16 @@ type Member = {
   role: 'owner' | 'viewer' | 'editor';
 };
 
-export default function SharedFolderModal({ mode = 'settings', folderName, onSave, onLeave, onClose }: SharedFolderModalProps) {
+export default function SharedFolderModal({
+  mode = 'settings',
+  folderName,
+  photoCount = 0,
+  createdAt = '-',
+  usedStorage = '0 MB',
+  onSave,
+  onLeave,
+  onClose
+}: SharedFolderModalProps) {
   const [isCopied, setIsCopied] = useState(false);
   const [inputName, setInputName] = useState(folderName);
   const [kickTarget, setKickTarget] = useState<Member | null>(null);
@@ -95,6 +107,28 @@ export default function SharedFolderModal({ mode = 'settings', folderName, onSav
 
         {mode === 'settings' && (
           <>
+            <div className="section-container">
+              <label className="section-label">폴더 정보 요약</label>
+              <div className="link-copy-container folder-summary-box">
+                <div className="member-info folder-summary-row">
+                  <div className="info-item">
+                    <ImageIcon size={16} className="summary-icon" />
+                    <span className="summary-text">사진 {photoCount}장</span>
+                  </div>
+                  <div className="summary-divider" />
+                  <div className="info-item">
+                    <Calendar size={16} className="summary-icon" />
+                    <span className="summary-text">{createdAt} 생성</span>
+                  </div>
+                  <div className="summary-divider" />
+                  <div className="info-item">
+                    <HardDrive size={16} className="summary-icon" />
+                    <span className="summary-text">사진 용량 {usedStorage}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <div className="section-container">
               <label className="section-label">새 멤버 초대</label>
               <div className="invite-input-row">

@@ -29,6 +29,33 @@
     letter-spacing: -0.3px;
 }
 
+.folder-title-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 18px;
+}
+
+.folder-title-row .folder-title {
+    margin: 0;
+}
+
+.folder-add-photo-btn {
+    border: none;
+    background: #003366;
+    color: #ffffff;
+    border-radius: 12px;
+    padding: 10px 14px;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.folder-add-photo-btn:hover {
+    opacity: 0.92;
+}
+
 /* 접힌 사이드바 스타일 */
 .sidebar-minimized {
     width: 50px;

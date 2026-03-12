@@ -5,12 +5,16 @@ type SidebarProps = {
     isOpen: boolean;
     onToggle: () => void;
     activeNav?: string;
+    remainingStorageText?: string;
+    totalStorageText?: string;
+    storagePercent?: number;
     folders: string[];
     sharedFolders: string[];
     onNavClick: (type: string, target?: string) => void;
     onPlusClick: () => void;
     onLinkClick: () => void;
     onStorageClick: () => void;
+    onLogoutClick?: () => void;
     onFolderSettingsClick: (name: string) => void;
     onSharedFolderSettingsClick: (name: string) => void;
 };
@@ -19,12 +23,16 @@ export default function Sidebar({
     isOpen,
     onToggle,
     activeNav,
+    remainingStorageText = '50.0 GB',
+    totalStorageText = '50.0 GB',
+    storagePercent = 0,
     folders,
     sharedFolders,
     onNavClick,
     onPlusClick,
     onLinkClick,
     onStorageClick,
+    onLogoutClick,
     onFolderSettingsClick,
     onSharedFolderSettingsClick,
 }: SidebarProps) {
@@ -137,13 +145,13 @@ export default function Sidebar({
                 <div className="storage-wrapper storage-clickable" onClick={onStorageClick}>
                     <div className="storage-text">
                         <span>잔여 저장공간</span>
-                        <span className="storage-val">13 / 50 GB</span>
+                        <span className="storage-val">{remainingStorageText} / {totalStorageText}</span>
                     </div>
                     <div className="storage-bar">
-                        <div className="fill" style={{ width: '26%' }} />
+                        <div className="fill" style={{ width: `${storagePercent}%` }} />
                     </div>
                 </div>
-                <button className="logout-btn-outline">로그아웃</button>
+                <button className="logout-btn-outline" onClick={onLogoutClick}>로그아웃</button>
             </div>
         </aside>
     );

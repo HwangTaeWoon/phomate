@@ -29,6 +29,29 @@
     font-weight: 600;
 }
 
+.user-avatar {
+    width: 26px;
+    height: 26px;
+    border-radius: 9999px;
+    object-fit: cover;
+    border: 1px solid #e5e7eb;
+}
+
+.user-avatar-fallback {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #e8eef8;
+    color: #003366;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.user-name {
+    color: #374151;
+    font-size: 13px;
+}
+
 .auth-links {
     color: #666;
 }

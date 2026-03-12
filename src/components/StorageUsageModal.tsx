@@ -10,6 +10,9 @@ type UsageItem = {
 interface StorageUsageModalProps {
   folderUsages: UsageItem[];
   sharedFolderUsages: UsageItem[];
+  totalStorageText: string;
+  usedStorageText: string;
+  remainingStorageText: string;
   onClose: () => void;
 }
 
@@ -47,7 +50,14 @@ function UsageSection({
   );
 }
 
-export default function StorageUsageModal({ folderUsages, sharedFolderUsages, onClose }: StorageUsageModalProps) {
+export default function StorageUsageModal({
+  folderUsages,
+  sharedFolderUsages,
+  totalStorageText,
+  usedStorageText,
+  remainingStorageText,
+  onClose
+}: StorageUsageModalProps) {
   return (
     <div className="storage-modal-overlay" onClick={onClose}>
       <div className="storage-modal-card" onClick={(event) => event.stopPropagation()}>
@@ -56,6 +66,21 @@ export default function StorageUsageModal({ folderUsages, sharedFolderUsages, on
           <button className="storage-close-btn" onClick={onClose}>
             <X size={20} />
           </button>
+        </div>
+
+        <div className="storage-summary">
+          <div className="storage-summary-item">
+            <span className="storage-summary-label">전체 용량</span>
+            <span className="storage-summary-value">{totalStorageText}</span>
+          </div>
+          <div className="storage-summary-item">
+            <span className="storage-summary-label">사용 중</span>
+            <span className="storage-summary-value">{usedStorageText}</span>
+          </div>
+          <div className="storage-summary-item">
+            <span className="storage-summary-label">잔여 용량</span>
+            <span className="storage-summary-value">{remainingStorageText}</span>
+          </div>
         </div>
 
         <UsageSection

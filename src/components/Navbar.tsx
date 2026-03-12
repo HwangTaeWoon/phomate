@@ -5,8 +5,11 @@ import '../styles/Navbar.css';
 interface NavbarProps {
     onNotiClick?: () => void;   
     onUploadClick?: () => void; 
+    onLogoClick?: () => void;
     notificationCount?: number;
     isLoggedIn?: boolean;
+    memberNickname?: string;
+    memberProfileImageUrl?: string;
     onLoginClick?: () => void;
     onLogoutClick?: () => void;
 }
@@ -14,8 +17,11 @@ interface NavbarProps {
 export default function Navbar({
     onNotiClick,
     onUploadClick,
+    onLogoClick,
     notificationCount = 0,
     isLoggedIn = false,
+    memberNickname,
+    memberProfileImageUrl,
     onLoginClick,
     onLogoutClick
 }: NavbarProps) {
@@ -33,7 +39,7 @@ export default function Navbar({
             </div>
             
             <div className="nav-center">
-                <h1 className="logo-text" onClick={() => window.location.href='/'}>
+                <h1 className="logo-text" onClick={onLogoClick}>
                     PHOMATE
                 </h1>
             </div>
@@ -55,6 +61,23 @@ export default function Navbar({
                     <Upload size={18} className="upload-icon" />
                     <span>업로드</span>
                 </div>
+
+                {isLoggedIn && (
+                    <div className="user-info">
+                        {memberProfileImageUrl ? (
+                            <img
+                                className="user-avatar"
+                                src={memberProfileImageUrl}
+                                alt="프로필"
+                            />
+                        ) : (
+                            <div className="user-avatar user-avatar-fallback">
+                                {(memberNickname?.trim().charAt(0) || 'U').toUpperCase()}
+                            </div>
+                        )}
+                        <span className="user-name">{memberNickname || '사용자'}</span>
+                    </div>
+                )}
             </div>
         </nav>
     );

@@ -39,18 +39,89 @@
 }
 
 .noti-item {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 12px;
+    width: 100%;
+    background: #ffffff;
     border: 1px solid #eee;
+    text-align: left;
+    display: flex;
+    padding: 12px;
     border-radius: 12px;
     cursor: pointer;
-    font-size: 13px;
     color: #333;
 }
 
 .noti-item:hover { background: #f9f9f9; }
+
+.noti-item.unread {
+    border-color: #cbd5e1;
+    background: #f8fbff;
+}
+
+.noti-item-body {
+    width: 100%;
+}
+
+.noti-item-title-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.noti-item-title {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 700;
+    color: #0f172a;
+}
+
+.noti-item-message {
+    margin: 6px 0 0;
+    font-size: 12px;
+    line-height: 1.5;
+    color: #475569;
+}
+
+.noti-item-meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.noti-item-time {
+    font-size: 11px;
+    color: #94a3b8;
+}
+
+.noti-unread-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: #2563eb;
+}
+
+.noti-empty {
+    border: 1px dashed #cbd5e1;
+    border-radius: 14px;
+    padding: 18px 16px;
+    text-align: center;
+    background: #f8fafc;
+}
+
+.noti-empty-title {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 700;
+    color: #0f172a;
+}
+
+.noti-empty-message {
+    margin: 8px 0 0;
+    font-size: 12px;
+    line-height: 1.5;
+    color: #64748b;
+}
 
 .noti-upload-section {
     margin-top: 10px;
@@ -108,6 +179,22 @@
     margin: 4px 0 0;
     color: #b91c1c;
     font-size: 11px;
+}
+
+.upload-progress-container {
+    width: 100%;
+    height: 6px;
+    background: #e2e8f0;
+    border-radius: 999px;
+    overflow: hidden;
+    margin-top: 8px;
+}
+
+.upload-progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #2563eb, #0f766e);
+    border-radius: 999px;
+    transition: width 0.2s ease;
 }
 /* 초대 모달 (중앙) */
 .modal-overlay {
