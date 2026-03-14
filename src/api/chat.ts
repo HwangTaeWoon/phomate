@@ -1,6 +1,6 @@
 type JsonRecord = Record<string, unknown>;
-import { authFetch } from './auth';
-type SearchResultItem = {
+import { authFetch, getAccessToken } from './auth';
+export type SearchResultItem = {
     postId: number;
     title: string;
     thumbnailUrl: string;
@@ -51,6 +51,23 @@ function asNumber(value: unknown): number {
         if (Number.isFinite(parsed)) return parsed;
     }
     return 0;
+}
+
+function getMemberIdFromAccessToken(): number {
+    const token = getAccessToken();
+    if (!token) return 0;
+
+    try {
+        const parts = token.split('.');
+        if (parts.length < 2) return 0;
+
+        const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+        const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, '=');
+        const payload = JSON.parse(atob(padded)) as JsonRecord;
+        return asNumber(payload.sub);
+    } catch {
+        return 0;
+    }
 }
 
 function extractTextFromPayload(payload: unknown): string {
@@ -277,87 +294,55 @@ export async function streamTextChat(
         onError?: (code: string) => void;
     }
 ): Promise<void> {
-    const response = await authFetch(toApiUrl('/api/chat/stream'), {
+    const memberId = getMemberIdFromAccessToken();
+    const endpoint = toApiUrl('/api/chat/stream');
+    const body = JSON.stringify({
+        ...(memberId > 0 ? { memberId } : {}),
+        chatSessionId: params.sessionId,
+        userText: params.message
+    });
+
+    const response = await authFetch(endpoint, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
             Accept: 'text/event-stream'
         },
-        body: JSON.stringify({
-            chatSessionId: params.sessionId,
-            userText: params.message
-        })
+        body,
+        cache: 'no-store'
     });
 
     if (!response.ok) {
         throw await buildHttpError(response, '텍스트 스트리밍 요청에 실패했습니다.');
     }
-
-    if (!response.body) {
-        const text = await response.text();
-        if (text) params.onDelta(text);
-        return;
-    }
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let pending = '';
-    let emittedAnyDelta = false;
-
-    const consumeBlock = (block: string): boolean => {
-        if (!block.trim()) return false;
-
-        const { eventType, data } = parseEventBlock(block);
-
-        if (eventType === 'delta') {
-            emittedAnyDelta = true;
-            params.onDelta(data);
-            return false;
-        }
-
-        if (eventType === 'error') {
-            if (params.onError) {
-                params.onError(data.trim() || 'stream_failed');
-            }
-            return false;
-        }
-
-        if (isDoneEvent(eventType, data)) {
-            return true;
-        }
-
-        const parsed = parseStreamLine(data);
-        if (parsed.done) return true;
-        if (parsed.text) {
-            emittedAnyDelta = true;
-            params.onDelta(parsed.text);
-        }
-        return false;
-    };
-
     try {
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            pending += decoder.decode(value, { stream: true });
-            const blocks = pending.split(/\r?\n\r?\n/);
-            pending = blocks.pop() ?? '';
-
-            for (const block of blocks) {
-                const shouldStop = consumeBlock(block);
-                if (shouldStop) return;
-            }
-        }
+        await consumeTextStreamResponse(response, {
+            onDelta: params.onDelta,
+            onError: params.onError
+        });
     } catch (error) {
-        if (!emittedAnyDelta) {
+        if (!isHttp2ProtocolError(error)) {
             throw error;
         }
-    }
 
-    pending += decoder.decode();
-    if (pending.trim()) {
-        consumeBlock(pending);
+        const retryResponse = await authFetch(endpoint, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Accept: '*/*'
+            },
+            body,
+            cache: 'no-store'
+        });
+
+        if (!retryResponse.ok) {
+            throw await buildHttpError(retryResponse, '텍스트 스트리밍 재시도에 실패했습니다.');
+        }
+
+        await consumeTextStreamResponse(retryResponse, {
+            onDelta: params.onDelta,
+            onError: params.onError
+        });
     }
 }
 
@@ -461,4 +446,89 @@ export async function confirmAutoFolder(
 
 function isDoneEvent(eventType: string, data: string): boolean {
     return eventType === 'done' || data.trim() === '[DONE]';
+}
+
+function isHttp2ProtocolError(error: unknown): boolean {
+    if (!(error instanceof Error)) return false;
+    const message = error.message || '';
+    return (
+        message.includes('ERR_HTTP2_PROTOCOL_ERROR') ||
+        message.includes('TypeError: Failed to fetch') ||
+        message.includes('NetworkError')
+    );
+}
+
+async function consumeTextStreamResponse(
+    response: Response,
+    params: {
+        onDelta: (delta: string) => void;
+        onError?: (code: string) => void;
+    }
+): Promise<void> {
+    if (!response.body) {
+        const text = await response.text();
+        if (text) params.onDelta(text);
+        return;
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let pending = '';
+    let emittedAnyDelta = false;
+
+    const consumeBlock = (block: string): boolean => {
+        if (!block.trim()) return false;
+
+        const { eventType, data } = parseEventBlock(block);
+
+        if (eventType === 'delta') {
+            emittedAnyDelta = true;
+            params.onDelta(data);
+            return false;
+        }
+
+        if (eventType === 'error') {
+            if (params.onError) {
+                params.onError(data.trim() || 'stream_failed');
+            }
+            return false;
+        }
+
+        if (isDoneEvent(eventType, data)) {
+            return true;
+        }
+
+        const parsed = parseStreamLine(data);
+        if (parsed.done) return true;
+        if (parsed.text) {
+            emittedAnyDelta = true;
+            params.onDelta(parsed.text);
+        }
+        return false;
+    };
+
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            pending += decoder.decode(value, { stream: true });
+            const blocks = pending.split(/\r?\n\r?\n/);
+            pending = blocks.pop() ?? '';
+
+            for (const block of blocks) {
+                const shouldStop = consumeBlock(block);
+                if (shouldStop) return;
+            }
+        }
+    } catch (error) {
+        if (!emittedAnyDelta) {
+            throw error;
+        }
+    }
+
+    pending += decoder.decode();
+    if (pending.trim()) {
+        consumeBlock(pending);
+    }
 }

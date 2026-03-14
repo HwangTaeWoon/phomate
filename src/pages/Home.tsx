@@ -24,6 +24,7 @@ import {
     isAuthenticated
 } from '../api/auth';
 import { createPhoto, getAlbumLatest, movePhotoToTrash } from '../api/photo';
+import { type ChatFolderPreviewPhoto } from '../api/chat';
 import { commitPhotoUpload, initPhotoUpload, putFileToPresignedUrl } from '../api/upload';
 import { getMyMember, type MemberProfile } from '../api/member';
 import '../styles/Home.css';
@@ -148,6 +149,8 @@ export default function Home() {
     const [isStorageModalOpen, setIsStorageModalOpen] = useState(false);
 
     const [myPhotos, setMyPhotos] = useState<Photo[]>([]);
+    const [chatSearchResultPhotos, setChatSearchResultPhotos] = useState<Photo[] | null>(null);
+    const [chatSearchQuery, setChatSearchQuery] = useState('');
     const [photoSizeBytesById, setPhotoSizeBytesById] = useState<Record<string, number>>({});
     const [memberProfile, setMemberProfile] = useState<MemberProfile | null>(null);
     const uploadNotificationStatusRef = useRef<Record<string, UploadTaskStatus>>({});
@@ -187,9 +190,29 @@ export default function Home() {
         setIsLoggedIn(false);
         setMemberProfile(null);
         setMyPhotos([]);
+        setChatSearchResultPhotos(null);
+        setChatSearchQuery('');
         setNotifications([]);
         uploadNotificationStatusRef.current = {};
         window.alert('로그아웃되었습니다.');
+    };
+
+    const handleChatSearchResults = (payload: { query: string; photos: ChatFolderPreviewPhoto[] }) => {
+        const mapped = payload.photos
+            .filter((photo) => photo.photoId > 0 && photo.previewUrl)
+            .map((photo) => ({
+                id: String(photo.photoId),
+                thumbnailUrl: photo.previewUrl,
+                previewUrl: photo.previewUrl,
+                shotAt: photo.shotAt,
+                likeCount: 0
+            }));
+
+        setChatSearchQuery(payload.query);
+        setChatSearchResultPhotos(mapped);
+        setView('home');
+        setSelectedFolder(null);
+        setPreviewIndex(null);
     };
 
     const pushNotification = (notification: Omit<HomeNotification, 'id' | 'createdAt' | 'read'>) => {
@@ -801,10 +824,11 @@ export default function Home() {
         : [];
 
     const currentViewPhotos =
-        view === 'home' ? myPhotos :
+        view === 'home' ? (chatSearchResultPhotos ?? myPhotos) :
         view === 'folder_detail' ? folderPhotos :
         view === 'shared_detail' ? sharedPhotos :
         [];
+    const isChatSearchView = view === 'home' && chatSearchResultPhotos !== null;
 
     const TOTAL_STORAGE_BYTES = 50 * 1024 * 1024 * 1024;
     const totalUsedStorageBytes = myPhotos.reduce((sum, photo) => sum + (photoSizeBytesById[photo.id] ?? 0), 0);
@@ -1020,6 +1044,25 @@ export default function Home() {
                         <h2 className="folder-title">{selectedFolder}</h2>
                     ) : null}
 
+                    {isChatSearchView ? (
+                        <div className="search-result-banner">
+                            <div className="search-result-meta">
+                                <strong>검색 결과</strong>
+                                <span>"{chatSearchQuery}"</span>
+                            </div>
+                            <button
+                                className="search-result-clear-btn"
+                                onClick={() => {
+                                    setChatSearchResultPhotos(null);
+                                    setChatSearchQuery('');
+                                    setPreviewIndex(null);
+                                }}
+                            >
+                                결과 해제
+                            </button>
+                        </div>
+                    ) : null}
+
                     {view === 'trash' ? (
                         <TrashView isLoggedIn={isLoggedIn} onChanged={() => void loadAlbum()} />
                     ) : (view === 'home' || view === 'folder_detail' || view === 'shared_detail') ? (
@@ -1028,7 +1071,11 @@ export default function Home() {
                                 <PhotoCard 
                                     key={photo.id} 
                                     photo={photo} 
-                                    onClick={() => setPreviewIndex(index)} 
+                                    onClick={() => {
+                                        if (!isChatSearchView) {
+                                            setPreviewIndex(index);
+                                        }
+                                    }} 
                                 />
                             ))}
                         </div>
@@ -1072,6 +1119,7 @@ export default function Home() {
                     onClose={() => setIsChatOpen(false)} 
                     onOpen={() => setIsChatOpen(true)} 
                     isLoggedIn={isLoggedIn}
+                    onSearchResults={handleChatSearchResults}
                 />
             </div>
 

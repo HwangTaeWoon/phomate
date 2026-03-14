@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { X, Edit3, Undo, Redo, Save } from 'lucide-react';
 import {
+    type ChatFolderPreviewPhoto,
     confirmAutoFolder,
     previewAutoFolder,
     sendEditChat,
@@ -30,9 +31,10 @@ type ChatbotProps = {
     onClose: () => void;
     onOpen: () => void;
     isLoggedIn: boolean;
+    onSearchResults?: (payload: { query: string; photos: ChatFolderPreviewPhoto[] }) => void;
 };
 
-export default function Chatbot({ isOpen, onClose, onOpen, isLoggedIn }: ChatbotProps) {
+export default function Chatbot({ isOpen, onClose, onOpen, isLoggedIn, onSearchResults }: ChatbotProps) {
     const isGuestChatMode = import.meta.env.VITE_CHAT_GUEST_MODE === 'true';
     const [activeTab, setActiveTab] = useState<'search' | 'edit'>('search');
     const [sessionId, setSessionId] = useState<number | null>(null);
@@ -214,6 +216,19 @@ export default function Chatbot({ isOpen, onClose, onOpen, isLoggedIn }: Chatbot
                 };
 
                 if (useSearchStream) {
+                    onSearchResults?.({ query: trimmed, photos: [] });
+
+                    try {
+                        const preview = await previewAutoFolder({
+                            chatSessionId: currentSessionId,
+                            userText: trimmed,
+                            topK: 24
+                        });
+                        onSearchResults?.({ query: trimmed, photos: preview.photos });
+                    } catch {
+                        // Keep text search working even if photo preview lookup fails.
+                    }
+
                     try {
                         await streamSearchChat({
                             sessionId: currentSessionId,
