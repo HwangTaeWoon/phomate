@@ -23,7 +23,7 @@ import {
     isAuthenticated
 } from '../api/auth';
 import { createPhoto, getAlbumLatest, movePhotoToTrash } from '../api/photo';
-import { type ChatFolderPreviewPhoto } from '../api/chat';
+import { type ChatFolderPreviewPhoto, confirmAutoFolder } from '../api/chat';
 import { commitPhotoUpload, initPhotoUpload, putFileToPresignedUrl } from '../api/upload';
 import { getMyMember, type MemberProfile } from '../api/member';
 import '../styles/Home.css';
@@ -151,6 +151,7 @@ export default function Home() {
         return `${bytes} B`;
     };
 
+    const [currentChatSessionId, setCurrentChatSessionId] = useState<number | undefined>(undefined);
     const [isLoggedIn, setIsLoggedIn] = useState<boolean>(isAuthenticated());
     const [view, setView] = useState<ViewType>('home');
     const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
@@ -267,6 +268,7 @@ const handleMouseDown = (photoId: string) => {
     isDraggingRef.current = true;
     // 드래그 시작한 사진 선택 (이미 선택된 경우도 유지)
     setSelectedPhotoIds((prev) => {
+
         const next = new Set(prev);
         next.add(photoId);
         return next;
@@ -801,21 +803,53 @@ useEffect(() => {
         else if (type === 'shared_child') { setView('shared_detail'); setSelectedFolder(target || null); }
     };
 
-    const handleSaveFolder = (name: string) => {
-        const trimmed = name.trim();
-        if (!trimmed) return false;
+    const handleSaveFolder = async (name: string, photoIds?: number[]) => {
+    const trimmed = name.trim();
+    if (!trimmed) return false;
 
-        if (folderModalMode === 'create') {
-            const isDuplicate = folders.some((f) => f.trim().toLocaleLowerCase() === trimmed.toLocaleLowerCase());
-            if (isDuplicate) { setModalConfig({ type: 'alert', message: '이미 존재하는 폴더 이름입니다.' }); return false; }
-            setFolders((prev) => [...prev, trimmed]);
-            setFolderStorageByName((prev) => ({ ...prev, [trimmed]: '0 MB' }));
-            setFolderCreatedAtByName((prev) => ({ ...prev, [trimmed]: todayDateText }));
-            setFolderPhotoIdsByName((prev) => ({ ...prev, [trimmed]: [] }));
-            setSelectedFolder(trimmed);
-            setView('folder_detail');
-            return true;
+    if (folderModalMode === 'create') {
+        // --- AI 자동 생성 모드일 경우 ---
+        if (photoIds && photoIds.length > 0) {
+            try {
+                // 1. 서버에 폴더 확정 요청
+                await confirmAutoFolder({ 
+                    accepted: true, 
+                    folderName: trimmed, 
+                    photoIds 
+                });
+                
+                // 2. 로컬 상태 업데이트 (화면 표시용)
+                setFolders((prev) => [...prev, trimmed]);
+                setFolderPhotoIdsByName((prev) => ({ 
+                    ...prev, 
+                    [trimmed]: photoIds.map(String) // ID들을 문자열로 변환하여 저장
+                }));
+                setFolderCreatedAtByName((prev) => ({ ...prev, [trimmed]: todayDateText }));
+                
+                setSelectedFolder(trimmed);
+                setView('folder_detail');
+                return true;
+            } catch (error) {
+                console.error("AI 폴더 저장 실패:", error);
+                alert("폴더 저장 중 오류가 발생했습니다.");
+                return false;
+            }
         }
+
+        // --- 일반 폴더 생성 모드 (기존 로직 유지) ---
+        const isDuplicate = folders.some((f) => f.trim().toLocaleLowerCase() === trimmed.toLocaleLowerCase());
+        if (isDuplicate) { 
+            setModalConfig({ type: 'alert', message: '이미 존재하는 폴더 이름입니다.' }); 
+            return false; 
+        }
+        setFolders((prev) => [...prev, trimmed]);
+        setFolderStorageByName((prev) => ({ ...prev, [trimmed]: '0 MB' }));
+        setFolderCreatedAtByName((prev) => ({ ...prev, [trimmed]: todayDateText }));
+        setFolderPhotoIdsByName((prev) => ({ ...prev, [trimmed]: [] }));
+        setSelectedFolder(trimmed);
+        setView('folder_detail');
+        return true;
+    }
 
         const sourceName = selectedFolderForSettings;
         if (sourceName === trimmed) return true;
@@ -1112,14 +1146,26 @@ useEffect(() => {
                         />
                     )}
                 </main>
-
-                <Chatbot
-                    isOpen={isChatOpen}
-                    onClose={() => setIsChatOpen(false)}
-                    onOpen={() => setIsChatOpen(true)}
-                    isLoggedIn={isLoggedIn}
-                    onSearchResults={handleChatSearchResults}
-                />
+<Chatbot
+    isOpen={isChatOpen}
+    onClose={() => setIsChatOpen(false)}
+    onOpen={() => setIsChatOpen(true)}
+    isLoggedIn={isLoggedIn}
+    onSearchResults={handleChatSearchResults}
+    onSessionStart={(id: number) => setCurrentChatSessionId(id)}
+    // ★ 챗봇에서 폴더가 생성되면 실행될 로직
+    onFolderCreated={(name, photoIds) => {
+        setFolders((prev) => [...prev, name]);
+        setFolderPhotoIdsByName((prev) => ({
+            ...prev,
+            [name]: photoIds.map(String)
+        }));
+        setFolderCreatedAtByName((prev) => ({ ...prev, [name]: todayDateText }));
+        // 생성된 폴더로 바로 이동하고 싶다면 아래 주석 해제
+        // setSelectedFolder(name);
+        // setView('folder_detail');
+    }}
+/>
             </div>
 
             {previewIndex !== null && currentViewPhotos[previewIndex] && (
@@ -1140,17 +1186,18 @@ useEffect(() => {
             )}
 
             {isFolderModalOpen && (
-                <FolderModal
-                    mode={folderModalMode}
-                    folderName={selectedFolderForSettings}
-                    photoCount={(folderPhotoIdsByName[selectedFolderForSettings] ?? []).length}
-                    createdAt={folderCreatedAtByName[selectedFolderForSettings] ?? todayDateText}
-                    usedStorage={folderStorageByName[selectedFolderForSettings] ?? '0 MB'}
-                    onSave={handleSaveFolder}
-                    onDelete={handleDeleteFolder}
-                    onClose={() => setIsFolderModalOpen(false)}
-                />
-            )}
+    <FolderModal
+        mode={folderModalMode}
+        chatSessionId={currentChatSessionId} // 추가: 챗봇에서 전달받은 세션 ID
+        folderName={selectedFolderForSettings}
+        photoCount={(folderPhotoIdsByName[selectedFolderForSettings] ?? []).length}
+        createdAt={folderCreatedAtByName[selectedFolderForSettings] ?? todayDateText}
+        usedStorage={folderStorageByName[selectedFolderForSettings] ?? '0 MB'}
+        onSave={handleSaveFolder} // 위에서 수정한 함수
+        onDelete={handleDeleteFolder}
+        onClose={() => setIsFolderModalOpen(false)}
+    />
+)}
 
             {isSharedModalOpen && (
                 <SharedFolderModal
