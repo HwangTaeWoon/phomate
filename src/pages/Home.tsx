@@ -1154,17 +1154,14 @@ useEffect(() => {
     onSearchResults={handleChatSearchResults}
     onSessionStart={(id: number) => setCurrentChatSessionId(id)}
     // ★ 챗봇에서 폴더가 생성되면 실행될 로직
-    onFolderCreated={(name, photoIds) => {
-        setFolders((prev) => [...prev, name]);
-        setFolderPhotoIdsByName((prev) => ({
-            ...prev,
-            [name]: photoIds.map(String)
-        }));
-        setFolderCreatedAtByName((prev) => ({ ...prev, [name]: todayDateText }));
-        // 생성된 폴더로 바로 이동하고 싶다면 아래 주석 해제
-        // setSelectedFolder(name);
-        // setView('folder_detail');
-    }}
+    onFolderCreated={(name, folderType, photoIds) => {
+    setFolders((prev) => [...prev, name]);
+    setFolderPhotoIdsByName((prev) => ({
+        ...prev,
+        [name]: photoIds.map(String)
+    }));
+    setFolderCreatedAtByName((prev) => ({ ...prev, [name]: todayDateText }));
+}}
 />
             </div>
 
