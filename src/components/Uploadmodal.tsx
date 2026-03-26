@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { X, UploadCloud } from 'lucide-react';
-import '../styles/UploadModal.css';
+import '../styles/Uploadmodal.css';
 
 type UploadModalProps = {
     onClose: () => void;

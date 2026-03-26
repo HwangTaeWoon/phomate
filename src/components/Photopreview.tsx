@@ -1,7 +1,7 @@
 import React from 'react';
 import { ChevronLeft, ChevronRight, X } from 'lucide-react';
 import { Photo } from '../types';
-import '../styles/PhotoPreview.css';
+import '../styles/Photopreview.css';
 
 interface PreviewProps {
     photo: Photo;

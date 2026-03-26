@@ -1062,7 +1062,11 @@ useEffect(() => {
                     ) : null}
 
                     {view === 'trash' ? (
-                        <TrashView isLoggedIn={isLoggedIn} onChanged={() => void loadAlbum()} />
+                        <TrashView
+                            isLoggedIn={isLoggedIn}
+                            onChanged={() => void loadAlbum()}
+                            onUnauthorized={handleUnauthorizedError}
+                        />
                     ) : (view === 'home' || view === 'folder_detail' || view === 'shared_detail') ? (
                         <>
                             <div className="photo-grid">

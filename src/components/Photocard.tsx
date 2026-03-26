@@ -1,6 +1,6 @@
 import React from 'react';
 import { Check } from 'lucide-react';
-import '../styles/PhotoCard.css';
+import '../styles/Photocard.css';
 
 export default function PhotoCard({ photo, onClick, isSelectMode, isSelected, onSelect }: any) {
     const hasTitle = typeof photo.title === 'string' && photo.title.trim().length > 0;

@@ -2,19 +2,37 @@ import React, { useEffect, useState } from 'react';
 import PhotoCard from './Photocard';
 import ActionModal from './Actionmodal';
 import { Photo } from '../types';
+import { getAccessToken } from '../api/auth';
 import { getTrashLatest, purgePhoto, restorePhoto } from '../api/photo';
-import '../styles/TrashView.css';
+import '../styles/Trashview.css';
 
 type TrashViewProps = {
     isLoggedIn: boolean;
     onChanged?: () => void;
+    onUnauthorized?: () => void;
 };
 
-export default function TrashView({ isLoggedIn, onChanged }: TrashViewProps) {
+export default function TrashView({ isLoggedIn, onChanged, onUnauthorized }: TrashViewProps) {
     const [isSelectMode, setIsSelectMode] = useState(false);
     const [selectedIds, setSelectedIds] = useState<string[]>([]);
     const [modalConfig, setModalConfig] = useState<{type: 'restore' | 'delete_confirm' | 'alert', message: string} | null>(null);
     const [trashPhotos, setTrashPhotos] = useState<Photo[]>([]);
+
+    const isUnauthorizedError = (error: unknown): boolean => {
+        if (!(error instanceof Error)) return false;
+        const message = error.message.toLowerCase();
+        return message.includes('401') || message.includes('unauthorized');
+    };
+
+    const errorMessageOf = (error: unknown, fallback: string): string => {
+        return error instanceof Error ? error.message : fallback;
+    };
+
+    const formatFailedIds = (ids: string[]): string => {
+        if (ids.length === 0) return '-';
+        const preview = ids.slice(0, 8).join(', ');
+        return ids.length > 8 ? `${preview} 외 ${ids.length - 8}건` : preview;
+    };
 
     const loadTrash = async () => {
         if (!isLoggedIn) {
@@ -32,6 +50,12 @@ export default function TrashView({ isLoggedIn, onChanged }: TrashViewProps) {
                 likeCount: 0
             })));
         } catch (error: unknown) {
+            if (isUnauthorizedError(error)) {
+                if (onUnauthorized && !getAccessToken()) onUnauthorized();
+                const message = error instanceof Error ? error.message : '휴지통을 불러오지 못했습니다.';
+                window.alert(message);
+                return;
+            }
             const message = error instanceof Error ? error.message : '휴지통을 불러오지 못했습니다.';
             window.alert(message);
         }
@@ -40,6 +64,14 @@ export default function TrashView({ isLoggedIn, onChanged }: TrashViewProps) {
     useEffect(() => {
         void loadTrash();
     }, [isLoggedIn]);
+
+    useEffect(() => {
+        setSelectedIds((prev) => {
+            if (prev.length === 0) return prev;
+            const existingIds = new Set(trashPhotos.map((photo) => photo.id));
+            return prev.filter((id) => existingIds.has(id));
+        });
+    }, [trashPhotos]);
 
     const toggleSelect = (id: string) => {
         setSelectedIds(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
@@ -54,30 +86,83 @@ export default function TrashView({ isLoggedIn, onChanged }: TrashViewProps) {
         }
     };
 
+    const allSelected = trashPhotos.length > 0 && selectedIds.length === trashPhotos.length;
+
+    const toggleSelectAll = () => {
+        if (allSelected) {
+            setSelectedIds([]);
+            return;
+        }
+
+        setSelectedIds(trashPhotos.map((photo) => photo.id));
+    };
+
     const executeRestore = async () => {
+        let successCount = 0;
+        let firstFailureMessage = '';
+        const failedIds: string[] = [];
+
         for (const id of selectedIds) {
             const photoId = Number(id);
             if (!Number.isFinite(photoId) || photoId <= 0) continue;
-            await restorePhoto(photoId);
+            try {
+                await restorePhoto(photoId);
+                successCount += 1;
+            } catch (error: unknown) {
+                failedIds.push(id);
+                if (!firstFailureMessage) {
+                    firstFailureMessage = errorMessageOf(error, '사진 복구에 실패했습니다.');
+                }
+                if (isUnauthorizedError(error) && onUnauthorized && !getAccessToken()) {
+                    onUnauthorized();
+                    return;
+                }
+            }
         }
 
-        setModalConfig({ type: 'alert', message: '복구되었습니다.' });
-        setIsSelectMode(false);
-        setSelectedIds([]);
+        const failedCount = selectedIds.length - successCount;
+        const resultMessage = failedCount > 0
+            ? `복구 ${successCount}건, 실패 ${failedCount}건\n실패 ID: ${formatFailedIds(failedIds)}\n${firstFailureMessage}`
+            : '복구되었습니다.';
+
+        setModalConfig({ type: 'alert', message: resultMessage });
+        setIsSelectMode(failedCount > 0);
+        setSelectedIds(failedIds);
         await loadTrash();
         if (onChanged) onChanged();
     };
 
     const executePurge = async () => {
+        let successCount = 0;
+        let firstFailureMessage = '';
+        const failedIds: string[] = [];
+
         for (const id of selectedIds) {
             const photoId = Number(id);
             if (!Number.isFinite(photoId) || photoId <= 0) continue;
-            await purgePhoto(photoId);
+            try {
+                await purgePhoto(photoId);
+                successCount += 1;
+            } catch (error: unknown) {
+                failedIds.push(id);
+                if (!firstFailureMessage) {
+                    firstFailureMessage = errorMessageOf(error, '사진 완전 삭제에 실패했습니다.');
+                }
+                if (isUnauthorizedError(error) && onUnauthorized && !getAccessToken()) {
+                    onUnauthorized();
+                    return;
+                }
+            }
         }
 
-        setModalConfig({ type: 'alert', message: '삭제되었습니다.' });
-        setIsSelectMode(false);
-        setSelectedIds([]);
+        const failedCount = selectedIds.length - successCount;
+        const resultMessage = failedCount > 0
+            ? `삭제 ${successCount}건, 실패 ${failedCount}건\n실패 ID: ${formatFailedIds(failedIds)}\n${firstFailureMessage}`
+            : '삭제되었습니다.';
+
+        setModalConfig({ type: 'alert', message: resultMessage });
+        setIsSelectMode(failedCount > 0);
+        setSelectedIds(failedIds);
         await loadTrash();
         if (onChanged) onChanged();
     };
@@ -103,6 +188,9 @@ export default function TrashView({ isLoggedIn, onChanged }: TrashViewProps) {
                 ) : (
                     <div className="trash-action-group">
                         <span className="trash-count">{selectedIds.length}개 선택</span>
+                        <button className="trash-btn select-all" onClick={toggleSelectAll} disabled={trashPhotos.length === 0}>
+                            {allSelected ? '전체 해제' : '전체 선택'}
+                        </button>
                         <button className="trash-btn restore" onClick={() => handleAction('restore')}>복구</button>
                         <button className="trash-btn delete" onClick={() => handleAction('delete')}>삭제</button>
                         <button className="trash-btn cancel" onClick={() => {setIsSelectMode(false); setSelectedIds([]);}}>취소</button>
@@ -130,6 +218,13 @@ export default function TrashView({ isLoggedIn, onChanged }: TrashViewProps) {
                         };
 
                         void run().catch((error: unknown) => {
+                            if (isUnauthorizedError(error)) {
+                                if (onUnauthorized && !getAccessToken()) onUnauthorized();
+                                const message = error instanceof Error ? error.message : '요청 처리에 실패했습니다.';
+                                window.alert(message);
+                                setModalConfig(null);
+                                return;
+                            }
                             const message = error instanceof Error ? error.message : '요청 처리에 실패했습니다.';
                             window.alert(message);
                             setModalConfig(null);

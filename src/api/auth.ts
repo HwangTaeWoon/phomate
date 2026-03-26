@@ -246,10 +246,6 @@ export async function authFetch(input: string | URL, init: RequestInit = {}): Pr
             headers: retryHeaders
         });
 
-        if (retriedResponse.status === 401) {
-            clearAuthTokens();
-        }
-
         return retriedResponse;
     } catch {
         clearAuthTokens();

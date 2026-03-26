@@ -50,5 +50,11 @@
 }
 
 .trash-btn.restore { background-color: #003366; color: white; }
+.trash-btn.select-all { background-color: #e6eef8; color: #003366; }
 .trash-btn.delete { background-color: #800020; color: white; } /* 다크 레드 */
 .trash-btn.cancel { background-color: #f3f4f6; color: #666; }
+
+.trash-btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}

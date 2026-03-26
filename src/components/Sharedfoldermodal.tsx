@@ -3,7 +3,7 @@ import { X, UserPlus, Calendar, Image as ImageIcon, HardDrive, RefreshCw } from 
 import ActionModal from './Actionmodal';
 import { authFetch } from '../api/auth';
 import { getMyMember } from '../api/member';
-import '../styles/SharedFolderModal.css';
+import '../styles/Sharedfoldermodal.css';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '';
 
