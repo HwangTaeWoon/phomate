@@ -460,10 +460,38 @@ useEffect(() => {
 
             setPhotoSizeBytesById((prev) => {
                 const next: Record<string, number> = { ...prev };
+                
+                // 비동기로 각 사진의 크기를 감지
                 items.forEach((item) => {
                     const id = String(item.photoId);
-                    if (item.sizeBytes && item.sizeBytes > 0) next[id] = item.sizeBytes;
-                    if (!(id in next)) next[id] = 0;
+                    
+                    // API에서 sizeBytes를 제공하면 사용
+                    if (item.sizeBytes && item.sizeBytes > 0) {
+                        next[id] = item.sizeBytes;
+                        console.log(`[사진 ${item.photoId}] API sizeBytes: ${item.sizeBytes} bytes`);
+                    } 
+                    // sizeBytes가 없으면 thumbnail URL에서 비동기로 크기 감지
+                    else if (item.thumbnailUrl || item.previewUrl) {
+                        next[id] = 0; // 일단 0으로 설정 (아래에서 비동기로 업데이트)
+                        
+                        const fetchSize = async (url: string) => {
+                            try {
+                                const response = await fetch(url, { method: 'HEAD' });
+                                const size = parseInt(response.headers.get('content-length') || '0', 10);
+                                if (size > 0) {
+                                    setPhotoSizeBytesById((p) => ({ ...p, [id]: size }));
+                                    console.log(`[사진 ${item.photoId}] 썸네일 크기: ${size} bytes (약 ${(size / (1024 * 1024)).toFixed(2)}MB)`);
+                                }
+                            } catch (error) {
+                                console.warn(`[사진 ${item.photoId}] 크기 감지 실패:`, error);
+                            }
+                        };
+                        
+                        const url = item.thumbnailUrl || item.previewUrl;
+                        if (url) fetchSize(url);
+                    } else {
+                        next[id] = 0;
+                    }
                 });
                 return next;
             });
